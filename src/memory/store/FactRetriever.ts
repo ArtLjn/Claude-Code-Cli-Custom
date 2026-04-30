@@ -11,6 +11,17 @@ import type { Database } from 'bun:sqlite'
 import type { Fact, FactCategory, ScoredFact, Contradiction, SearchOptions, ContradictOptions, RetrieverOptions } from '../types'
 import { MemoryStore } from './MemoryStore'
 
+// 中文字符级匹配的虚词集合（这些单字太常见，不参与字符交叉匹配）
+const CN_OVERLAP_STOP = new Set([
+  '的', '了', '是', '在', '有', '和', '就', '不', '人', '都',
+  '一', '个', '上', '也', '很', '到', '说', '要', '去', '你',
+  '会', '着', '没', '看', '好', '自', '这', '他', '她', '它',
+  '那', '些', '用', '对', '下', '为', '从', '被', '把', '能',
+  '可', '以', '所', '而', '又', '与', '但', '或', '等', '中',
+  '大', '小', '多', '少', '其', '之', '做', '让', '给', '已',
+  '还', '来', '地', '得', '过', '时', '里', '后', '前', '当',
+])
+
 interface FtsCandidate extends Fact {
   ftsRank: number
 }
@@ -20,6 +31,10 @@ export class FactRetriever {
   private ftsWeight: number
   private jaccardWeight: number
   private halfLifeDays: number
+  /** category → 高频 tag 集合（从事实库自动学习，惰性初始化） */
+  private _categoryTagMap: Map<FactCategory, Set<string>> | null = null
+  /** 中英术语对列表（从事实库自动学习，惰性初始化） */
+  private _cnEnPairs: Array<[string, string]> | null = null
 
   constructor(
     private store: MemoryStore,
@@ -31,28 +46,62 @@ export class FactRetriever {
     this.halfLifeDays = options?.temporalDecayHalfLife ?? 0
   }
 
-  /** 主搜索：FTS5 → Jaccard → 信任评分 → 时间衰减 */
+  /** 主搜索：FTS5 → LIKE → 字符交叉 → 分类推断 → Jaccard → 信任评分 → 时间衰减 */
   search(query: string, options?: SearchOptions): ScoredFact[] {
     const minTrust = options?.minTrust ?? 0.3
     const limit = options?.limit ?? 10
     const category = options?.category
 
-    // Stage 1: FTS5 候选集，空时 fallback 到 LIKE
-    let candidates = this.ftsCandidates(query, category, minTrust, limit * 3)
+    // 查询双语扩展：中文术语追加英文，英文术语追加中文
+    const expandedQuery = this.expandQueryBilingually(query)
+
+    // Stage 1: FTS5 候选集，空时逐级 fallback（使用双语扩展后的查询）
+    let candidates = this.ftsCandidates(expandedQuery, category, minTrust, limit * 3)
     if (candidates.length === 0) {
-      candidates = this.likeFallback(query, category, minTrust, limit * 3)
+      candidates = this.likeFallback(expandedQuery, category, minTrust, limit * 3)
     }
     if (candidates.length === 0) {
-      // Fallback: 仅对个人/身份相关的短查询触发（如"你是谁"、"我叫什么"）
-      // 代码/技术查询（如"帮我重构"、"git commit"）不触发，避免 token 浪费
+      candidates = this.charOverlapFallback(expandedQuery, category, minTrust, limit * 3)
+    }
+    if (candidates.length === 0) {
+      // 分类推断 fallback（仅无 category 过滤时生效）
+      if (!category) {
+        const inferred = this.categoryInferFallback(query, minTrust, limit)
+        if (inferred.length > 0) return inferred
+      }
+      // 个人/身份相关的短查询触发 trust fallback
       if (this.isPersonalQuery(query)) {
         return this.trustFallback(category, minTrust, limit)
       }
       return []
     }
 
-    // Stage 2-4: Jaccard 重排序 + 信任评分 + 时间衰减
+    // Stage 2-4: Jaccard 重排序 + 信任评分 + 时间衰减 + category 信号
     const queryTokens = this.tokenize(query)
+    const tagMap = this.getCategoryTagMap()
+    // 计算查询对各 category 的信号强度
+    // 使用 IDF 思路：命中的 tag 在该 category 中越"稀有"，信号越强
+    // 小 category 命中 1 个 tag 的权重远大于大 category 命中 1 个
+    const categorySignal = new Map<FactCategory, number>()
+    const ql = query.toLowerCase()
+    // 先找所有 category 中的最大 tag 数，用于归一化
+    let maxTagSize = 1
+    for (const [, tags] of tagMap) {
+      if (tags.size > maxTagSize) maxTagSize = tags.size
+    }
+    for (const [cat, tags] of tagMap) {
+      let hits = 0
+      for (const tag of tags) {
+        if (ql.includes(tag)) hits++
+      }
+      if (hits > 0) {
+        // IDF 式加权：log(最大tag数/该category的tag数) 作为类别特异性权重
+        const idfWeight = Math.log(maxTagSize / Math.max(tags.size, 1)) + 1
+        const signal = hits * idfWeight
+        categorySignal.set(cat, signal)
+      }
+    }
+
     const scored: ScoredFact[] = []
 
     for (const fact of candidates) {
@@ -61,10 +110,22 @@ export class FactRetriever {
       const allTokens = new Set([...contentTokens, ...tagTokens])
 
       const jaccard = this.jaccardSimilarity(queryTokens, allTokens)
+      // Containment: 查询 token 在事实 token 中的覆盖率（不对称，惩罚长事实的黑洞效应）
+      const containment = this.containmentScore(queryTokens, allTokens)
+      // 混合相似度：Jaccard 和 containment 的加权平均
+      const similarity = 0.3 * jaccard + 0.7 * containment
       const ftsScore = fact.ftsRank
 
       // 综合评分
-      const relevance = this.ftsWeight * ftsScore + this.jaccardWeight * jaccard
+      let relevance = this.ftsWeight * ftsScore + this.jaccardWeight * similarity
+
+      // Category 信号加权：如果查询与该事实的 category 高度关联，提升评分
+      const catSig = categorySignal.get(fact.category) ?? 0
+      if (catSig > 0) {
+        // 加法提升：信号越强提升越大
+        relevance += 0.3 * catSig
+      }
+
       let score = relevance * fact.trustScore
 
       // 时间衰减
@@ -76,7 +137,29 @@ export class FactRetriever {
     }
 
     scored.sort((a, b) => b.score - a.score)
-    const results = scored.slice(0, limit)
+
+    // Category 多样性：同类事实只保留评分最高的，避免 general 黑洞效应
+    const seenCategories = new Set<FactCategory>()
+    const diverse: ScoredFact[] = []
+    for (const s of scored) {
+      if (!seenCategories.has(s.category)) {
+        seenCategories.add(s.category)
+        diverse.push(s)
+      }
+      if (diverse.length >= limit) break
+    }
+    // 补位：如果去重后不足 limit，从原排序列表中补（允许同类多次出现）
+    if (diverse.length < limit) {
+      const diverseIds = new Set(diverse.map(f => f.factId))
+      for (const s of scored) {
+        if (!diverseIds.has(s.factId)) {
+          diverse.push(s)
+          if (diverse.length >= limit) break
+        }
+      }
+    }
+
+    const results = diverse
 
     // 检索追踪：递增 retrieval_count + top3 信任刷新
     if (results.length > 0) {
@@ -354,7 +437,7 @@ export class FactRetriever {
     }))
   }
 
-  /** 简单分词：空格/下划线/中英文标点分割 + 小写 */
+  /** 简单分词：空格/下划线/中英文标点分割 + 小写 + 中文 bigram */
   private tokenize(text: string): Set<string> {
     if (!text) return new Set()
     const tokens = new Set<string>()
@@ -364,6 +447,13 @@ export class FactRetriever {
       .replace(/[，。！？；：、""''【】《》（）…—·,.;:!?'"()\[\]{}<>@#$%^&*+=~`]/g, ' ')
     for (const word of normalized.split(/\s+/)) {
       if (word && word.length > 1) tokens.add(word)
+    }
+    // 中文 bigram：提升 Jaccard 对中文内容的匹配能力
+    const cnChars = text.match(/[\u4e00-\u9fff]+/g) ?? []
+    for (const seg of cnChars) {
+      for (let i = 0; i < seg.length - 1; i++) {
+        tokens.add(seg.slice(i, i + 2))
+      }
     }
     return tokens
   }
@@ -377,6 +467,16 @@ export class FactRetriever {
     }
     const unionSize = a.size + b.size - intersection
     return unionSize > 0 ? intersection / unionSize : 0
+  }
+
+  /** Containment: a 中有多少比例的 token 出现在 b 中（不对称，衡量"查询被事实覆盖"的程度） */
+  private containmentScore(a: Set<string>, b: Set<string>): number {
+    if (a.size === 0 || b.size === 0) return 0
+    let hits = 0
+    for (const item of a) {
+      if (b.has(item)) hits++
+    }
+    return hits / a.size
   }
 
   /** 时间衰减: 0.5^(ageDays / halfLifeDays) */
@@ -435,11 +535,35 @@ export class FactRetriever {
     if (words.length === 0) return []
 
     // 对每个词做 LIKE 匹配，取并集
-    const conditions = words.map(() => '(f.content LIKE ? OR f.tags LIKE ?)').join(' OR ')
+    const conditions: string[] = []
     const params: unknown[] = []
     for (const word of words) {
+      conditions.push('(f.content LIKE ? OR f.tags LIKE ?)')
       params.push(`%${word}%`, `%${word}%`)
     }
+
+    // 中文子串分解：将中文查询拆为 2~3 字滑动窗口，追加 LIKE 条件
+    // 例："颜色忌讳" → LIKE "%颜色%" OR "%色忌%" OR "%忌讳%"
+    const cnChars = query.match(/[\u4e00-\u9fff]+/g)
+    if (cnChars) {
+      for (const seg of cnChars) {
+        if (seg.length < 2) continue
+        // 2-gram
+        for (let i = 0; i < seg.length - 1; i++) {
+          const bigram = seg.slice(i, i + 2)
+          conditions.push('(f.content LIKE ? OR f.tags LIKE ?)')
+          params.push(`%${bigram}%`, `%${bigram}%`)
+        }
+        // 3-gram（覆盖更长的短语匹配）
+        for (let i = 0; i < seg.length - 2; i++) {
+          const trigram = seg.slice(i, i + 3)
+          conditions.push('(f.content LIKE ? OR f.tags LIKE ?)')
+          params.push(`%${trigram}%`, `%${trigram}%`)
+        }
+      }
+    }
+
+    const conditionsSql = conditions.join(' OR ')
 
     params.push(minTrust)
     let categoryClause = ''
@@ -454,7 +578,7 @@ export class FactRetriever {
              f.trust_score, f.retrieval_count, f.helpful_count,
              f.created_at, f.updated_at
       FROM facts f
-      WHERE (${conditions})
+      WHERE (${conditionsSql})
         AND f.trust_score >= ?
         ${categoryClause}
       ORDER BY f.trust_score DESC
@@ -480,6 +604,208 @@ export class FactRetriever {
       updatedAt: r.updated_at,
       ftsRank: 0.5,
     }))
+  }
+
+  /** 中文字符级 fallback — FTS5 和 LIKE 都失败时，用单字交叉匹配 */
+  private charOverlapFallback(
+    query: string,
+    category: FactCategory | undefined,
+    minTrust: number,
+    limit: number,
+  ): FtsCandidate[] {
+    // 提取查询中的中文单字（去重，排除常见虚词）
+    const cnChars = [...new Set((query.match(/[\u4e00-\u9fff]/g) ?? []))]
+      .filter(c => !CN_OVERLAP_STOP.has(c))
+    if (cnChars.length < 2) return [] // 中文单字太少，不值得匹配
+
+    // 内存中扫描所有事实，计算字符重叠率
+    const allFacts = this.store.listFacts(category, minTrust, 200)
+    const results: Array<{ fact: Fact; overlap: number }> = []
+
+    for (const fact of allFacts) {
+      const text = (fact.content + fact.tags)
+      let hits = 0
+      for (const c of cnChars) {
+        if (text.includes(c)) hits++
+      }
+      const overlap = hits / cnChars.length
+      // 至少 40% 的查询字符出现在事实中
+      if (overlap >= 0.4) {
+        results.push({ fact, overlap })
+      }
+    }
+
+    if (results.length === 0) return []
+
+    // 按重叠率 * 信任评分排序
+    results.sort((a, b) => (b.overlap * b.fact.trustScore) - (a.overlap * a.fact.trustScore))
+
+    return results.slice(0, limit).map(({ fact, overlap }) => ({
+      ...fact,
+      ftsRank: overlap * 0.8, // 字符重叠率作为伪排名
+    }))
+  }
+
+  /** 分类推断 fallback — 根据查询关键词推断 category，返回该分类的高信任事实 */
+  private categoryInferFallback(
+    query: string,
+    minTrust: number,
+    limit: number,
+  ): ScoredFact[] {
+    const inferred = this.inferCategory(query)
+    if (!inferred) return []
+
+    const facts = this.store.listFacts(inferred, minTrust, limit)
+    return facts.map((f, i) => ({
+      ...f,
+      score: f.trustScore * (1 - i * 0.05) * 0.7, // 分类推断的确定性较低，乘以 0.7 折扣
+    }))
+  }
+
+  /** 从事实库自动学习 category → tag 映射（惰性初始化 + 缓存） */
+  private getCategoryTagMap(): Map<FactCategory, Set<string>> {
+    if (this._categoryTagMap) return this._categoryTagMap
+
+    const map = new Map<FactCategory, Set<string>>()
+    const allFacts = this.store.listFacts(undefined, 0.2, 200)
+
+    for (const fact of allFacts) {
+      if (!map.has(fact.category)) map.set(fact.category, new Set())
+      const tagSet = map.get(fact.category)!
+      // 从 tags 字段提取
+      for (const tag of fact.tags.split(',')) {
+        const t = tag.trim().toLowerCase()
+        if (t.length >= 2) tagSet.add(t)
+      }
+      // 从 content 提取中文 bigram 作为隐式 tag
+      const cnChars = fact.content.match(/[\u4e00-\u9fff]+/g) ?? []
+      for (const seg of cnChars) {
+        for (let i = 0; i < seg.length - 1; i++) {
+          const bg = seg.slice(i, i + 2)
+          if (!CN_OVERLAP_STOP.has(bg[0]) && !CN_OVERLAP_STOP.has(bg[1])) {
+            tagSet.add(bg)
+          }
+        }
+      }
+      // 从 content 提取英文单词（≥3 字母）作为隐式 tag
+      const enWords = fact.content.match(/[a-zA-Z]{3,}/g) ?? []
+      for (const w of enWords) {
+        tagSet.add(w.toLowerCase())
+      }
+    }
+
+    this._categoryTagMap = map
+    return map
+  }
+
+  /**
+   * 从事实库自动学习中英术语对（惰性初始化 + 缓存）。
+   * 两个来源：
+   * 1. 种子表：极小的核心 IT 术语对照（稳定不变，覆盖高频查询）
+   * 2. 事实库提取：括号注释/分隔符关联的高置信翻译对（自动增长）
+   * 歧义对（一个中文对应多个英文）自动丢弃。
+   */
+  private getCnEnPairs(): Array<[string, string]> {
+    if (this._cnEnPairs) return this._cnEnPairs
+
+    // cn → [en列表]
+    const candidateMap = new Map<string, Set<string>>()
+
+    // 种子表：核心 IT 术语（极小、稳定、高频，约20对）
+    const SEED_PAIRS: Array<[string, string]> = [
+      ['抓取', 'scraping'], ['爬虫', 'crawler'], ['逆向', 'reverse'],
+      ['部署', 'deploy'], ['架构', 'architecture'], ['接口', 'api'],
+      ['数据库', 'database'], ['缓存', 'cache'], ['配置', 'config'],
+      ['构建', 'build'], ['编译', 'compile'], ['调试', 'debug'],
+      ['测试', 'test'], ['提交', 'commit'], ['合并', 'merge'],
+      ['终端', 'terminal'], ['命令行', 'cli'], ['邮箱', 'email'],
+      ['模型', 'model'], ['插件', 'plugin'], ['渐变', 'gradient'],
+    ]
+    for (const [cn, en] of SEED_PAIRS) {
+      this.addPair(candidateMap, cn, en)
+    }
+
+    // 从事实库提取高置信对
+    const allFacts = this.store.listFacts(undefined, 0.2, 200)
+    for (const fact of allFacts) {
+      const text = fact.content + ' ' + fact.tags
+
+      // 括号注释："逆向（reverse）"
+      for (const m of text.matchAll(/([\u4e00-\u9fff]{2,4})\s*[（(]\s*([a-zA-Z]{2,})\s*[)）]/g))
+        this.addPair(candidateMap, m[1], m[2].toLowerCase())
+      for (const m of text.matchAll(/([a-zA-Z]{2,})\s*[（(]\s*([\u4e00-\u9fff]{2,4})\s*[)）]/g))
+        this.addPair(candidateMap, m[2], m[1].toLowerCase())
+
+      // 分隔符关联："名称:BlockShip"
+      for (const m of text.matchAll(/([\u4e00-\u9fff]{2,4})\s*[：:=]\s*([a-zA-Z]{2,})/g))
+        this.addPair(candidateMap, m[1], m[2].toLowerCase())
+      for (const m of text.matchAll(/([a-zA-Z]{2,})\s*[：:=]\s*([\u4e00-\u9fff]{2,4})/g))
+        this.addPair(candidateMap, m[2], m[1].toLowerCase())
+    }
+
+    // 过滤：只保留唯一映射，歧义对丢弃
+    const pairs: Array<[string, string]> = []
+    for (const [cn, enSet] of candidateMap) {
+      if (enSet.size === 1) {
+        const en = [...enSet][0]
+        if (en.length >= 2 && !CN_OVERLAP_STOP.has(cn[0])) {
+          pairs.push([cn, en])
+        }
+      }
+    }
+
+    this._cnEnPairs = pairs
+    return pairs
+  }
+
+  /** 添加候选对到 map */
+  private addPair(map: Map<string, Set<string>>, cn: string, en: string): void {
+    if (!map.has(cn)) map.set(cn, new Set())
+    map.get(cn)!.add(en)
+  }
+
+  /** 查询双语扩展：基于事实库自动学习的术语对照，将查询中的术语翻译为对端语言 */
+  private expandQueryBilingually(query: string): string {
+    const pairs = this.getCnEnPairs()
+    if (pairs.length === 0) return query
+
+    const extras: string[] = []
+    const ql = query.toLowerCase()
+
+    for (const [cn, en] of pairs) {
+      // 中文→英文
+      if (ql.includes(cn) && !ql.includes(en)) {
+        extras.push(en)
+      }
+      // 英文→中文
+      if (ql.includes(en) && !ql.includes(cn)) {
+        extras.push(cn)
+      }
+    }
+
+    return extras.length > 0 ? `${query} ${extras.join(' ')}` : query
+  }
+
+  /** 从查询内容推断 category — 基于事实库自动学习的 tag 映射 */
+  private inferCategory(query: string): FactCategory | null {
+    const tagMap = this.getCategoryTagMap()
+    const q = query.toLowerCase()
+
+    let bestCategory: FactCategory | null = null
+    let bestScore = 0
+
+    for (const [cat, tags] of tagMap) {
+      let score = 0
+      for (const tag of tags) {
+        if (q.includes(tag)) score++
+      }
+      if (score > bestScore) {
+        bestScore = score
+        bestCategory = cat
+      }
+    }
+
+    return bestScore >= 1 ? bestCategory : null
   }
 
   /** 检索追踪：递增 retrieval_count + top3 信任刷新（重置衰减时钟） */

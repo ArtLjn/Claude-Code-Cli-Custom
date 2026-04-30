@@ -352069,34 +352069,59 @@ class MemoryStore {
   }
   findSimilarFact(content, category) {
     const newEntities = this.extractEntities(content).map((e2) => e2.toLowerCase());
-    if (newEntities.length === 0)
-      return null;
-    const entitySet = new Set(newEntities);
     const existing = this.listFacts(category, 0, 50);
-    let bestMatch = null;
-    let bestScore = 0;
-    for (const fact of existing) {
-      const factEntityNames = this.stmtGetEntitiesForFact.all(fact.factId).map((r2) => r2.name.toLowerCase());
-      if (factEntityNames.length === 0)
-        continue;
-      const factEntitySet = new Set(factEntityNames);
-      let overlap = 0;
-      for (const e2 of entitySet) {
-        if (factEntitySet.has(e2))
-          overlap++;
+    if (newEntities.length > 0) {
+      const entitySet = new Set(newEntities);
+      let bestMatch = null;
+      let bestScore = 0;
+      for (const fact of existing) {
+        const factEntityNames = this.stmtGetEntitiesForFact.all(fact.factId).map((r2) => r2.name.toLowerCase());
+        if (factEntityNames.length === 0)
+          continue;
+        const factEntitySet = new Set(factEntityNames);
+        let overlap = 0;
+        for (const e2 of entitySet) {
+          if (factEntitySet.has(e2))
+            overlap++;
+        }
+        const newInOld = overlap / entitySet.size;
+        const oldInNew = overlap / factEntitySet.size;
+        const entityScore = Math.min(newInOld, oldInNew);
+        if (entityScore < 0.5)
+          continue;
+        const editSim = this.normalizedEditDistance(content, fact.content);
+        if (editSim >= 0.5 && editSim > bestScore) {
+          bestMatch = fact;
+          bestScore = editSim;
+        }
       }
-      const newInOld = overlap / entitySet.size;
-      const oldInNew = overlap / factEntitySet.size;
-      const entityScore = Math.min(newInOld, oldInNew);
-      if (entityScore < 0.5)
-        continue;
-      const editSim = this.normalizedEditDistance(content, fact.content);
-      if (editSim >= 0.5 && editSim > bestScore) {
-        bestMatch = fact;
-        bestScore = editSim;
+      if (bestMatch)
+        return bestMatch;
+    }
+    const tokens = this.tokenizeForDedup(content);
+    if (tokens.size >= 3) {
+      let bestMatch = null;
+      let bestScore = 0;
+      for (const fact of existing) {
+        const factTokens = this.tokenizeForDedup(fact.content);
+        const sim = this.jaccardSimilarity(tokens, factTokens);
+        if (sim >= 0.45 && sim > bestScore) {
+          bestMatch = fact;
+          bestScore = sim;
+        }
+      }
+      if (bestMatch)
+        return bestMatch;
+    }
+    if (tokens.size >= 3) {
+      for (const fact of existing) {
+        const factTokens = this.tokenizeForDedup(fact.content);
+        if (this.containmentScore(tokens, factTokens) >= 0.8) {
+          return fact;
+        }
       }
     }
-    return bestMatch;
+    return null;
   }
   normalizedEditDistance(a3, b5) {
     if (a3 === b5)
@@ -352309,6 +352334,8 @@ class MemoryStore {
     return demoted;
   }
   auditContradictions() {
+    let demoted = 0;
+    const alreadyDemoted = new Set;
     const rows = this.db.prepare(`
       SELECT f1.fact_id as id1, f1.content as c1, f1.updated_at as t1,
              f2.fact_id as id2, f2.content as c2, f2.updated_at as t2
@@ -352323,8 +352350,6 @@ class MemoryStore {
         AND f2.trust_score >= 0.2
       GROUP BY f1.fact_id, f2.fact_id
     `).all();
-    let demoted = 0;
-    const alreadyDemoted = new Set;
     for (const row of rows) {
       const editSim = this.normalizedEditDistance(row.c1, row.c2);
       if (editSim >= 0.2 && editSim < 0.5) {
@@ -352333,6 +352358,32 @@ class MemoryStore {
           this.db.prepare("UPDATE facts SET trust_score = MAX(0, trust_score - 0.10) WHERE fact_id = ?").run(older);
           alreadyDemoted.add(older);
           demoted++;
+        }
+      }
+    }
+    const allFacts = this.listFacts(undefined, 0.2, 200);
+    if (allFacts.length <= 200 && allFacts.length >= 2) {
+      for (let i4 = 0;i4 < allFacts.length; i4++) {
+        const a3 = allFacts[i4];
+        const tokensA = this.tokenizeForDedup(a3.content);
+        if (tokensA.size < 3)
+          continue;
+        for (let j3 = i4 + 1;j3 < allFacts.length; j3++) {
+          const b5 = allFacts[j3];
+          if (a3.category !== b5.category)
+            continue;
+          const tokensB = this.tokenizeForDedup(b5.content);
+          if (tokensB.size < 3)
+            continue;
+          const sim = this.jaccardSimilarity(tokensA, tokensB);
+          if (sim >= 0.45 && sim < 0.7) {
+            const older = a3.updatedAt < b5.updatedAt ? a3.factId : b5.factId;
+            if (!alreadyDemoted.has(older)) {
+              this.db.prepare("UPDATE facts SET trust_score = MAX(0, trust_score - 0.10) WHERE fact_id = ?").run(older);
+              alreadyDemoted.add(older);
+              demoted++;
+            }
+          }
         }
       }
     }
@@ -352374,19 +352425,6 @@ class MemoryStore {
   }
   get connection() {
     return this.db;
-  }
-  findSimilar(content, category) {
-    const tokens = this.tokenizeForDedup(content);
-    if (tokens.size < 3)
-      return null;
-    const existing = this.listFacts(category, 0, 50);
-    for (const fact of existing) {
-      const factTokens = this.tokenizeForDedup(fact.content);
-      const sim = this.jaccardSimilarity(tokens, factTokens);
-      if (sim >= 0.4)
-        return fact;
-    }
-    return null;
   }
   tokenizeForDedup(text2) {
     const tokens = new Set;
@@ -352600,6 +352638,8 @@ class FactRetriever {
   ftsWeight;
   jaccardWeight;
   halfLifeDays;
+  _categoryTagMap = null;
+  _cnEnPairs = null;
   constructor(store, options) {
     this.store = store;
     this.db = store.connection;
@@ -352611,25 +352651,60 @@ class FactRetriever {
     const minTrust = options?.minTrust ?? 0.3;
     const limit = options?.limit ?? 10;
     const category = options?.category;
-    let candidates = this.ftsCandidates(query2, category, minTrust, limit * 3);
+    const expandedQuery = this.expandQueryBilingually(query2);
+    let candidates = this.ftsCandidates(expandedQuery, category, minTrust, limit * 3);
     if (candidates.length === 0) {
-      candidates = this.likeFallback(query2, category, minTrust, limit * 3);
+      candidates = this.likeFallback(expandedQuery, category, minTrust, limit * 3);
     }
     if (candidates.length === 0) {
+      candidates = this.charOverlapFallback(expandedQuery, category, minTrust, limit * 3);
+    }
+    if (candidates.length === 0) {
+      if (!category) {
+        const inferred = this.categoryInferFallback(query2, minTrust, limit);
+        if (inferred.length > 0)
+          return inferred;
+      }
       if (this.isPersonalQuery(query2)) {
         return this.trustFallback(category, minTrust, limit);
       }
       return [];
     }
     const queryTokens = this.tokenize(query2);
+    const tagMap = this.getCategoryTagMap();
+    const categorySignal = new Map;
+    const ql = query2.toLowerCase();
+    let maxTagSize = 1;
+    for (const [, tags] of tagMap) {
+      if (tags.size > maxTagSize)
+        maxTagSize = tags.size;
+    }
+    for (const [cat2, tags] of tagMap) {
+      let hits = 0;
+      for (const tag of tags) {
+        if (ql.includes(tag))
+          hits++;
+      }
+      if (hits > 0) {
+        const idfWeight = Math.log(maxTagSize / Math.max(tags.size, 1)) + 1;
+        const signal = hits * idfWeight;
+        categorySignal.set(cat2, signal);
+      }
+    }
     const scored = [];
     for (const fact of candidates) {
       const contentTokens = this.tokenize(fact.content);
       const tagTokens = this.tokenize(fact.tags);
       const allTokens = new Set([...contentTokens, ...tagTokens]);
       const jaccard = this.jaccardSimilarity(queryTokens, allTokens);
+      const containment = this.containmentScore(queryTokens, allTokens);
+      const similarity = 0.3 * jaccard + 0.7 * containment;
       const ftsScore = fact.ftsRank;
-      const relevance = this.ftsWeight * ftsScore + this.jaccardWeight * jaccard;
+      let relevance = this.ftsWeight * ftsScore + this.jaccardWeight * similarity;
+      const catSig = categorySignal.get(fact.category) ?? 0;
+      if (catSig > 0) {
+        relevance += 0.3 * catSig;
+      }
       let score = relevance * fact.trustScore;
       if (this.halfLifeDays > 0) {
         score *= this.temporalDecay(fact.updatedAt || fact.createdAt);
@@ -352637,7 +352712,27 @@ class FactRetriever {
       scored.push({ ...fact, score });
     }
     scored.sort((a3, b5) => b5.score - a3.score);
-    const results = scored.slice(0, limit);
+    const seenCategories = new Set;
+    const diverse = [];
+    for (const s2 of scored) {
+      if (!seenCategories.has(s2.category)) {
+        seenCategories.add(s2.category);
+        diverse.push(s2);
+      }
+      if (diverse.length >= limit)
+        break;
+    }
+    if (diverse.length < limit) {
+      const diverseIds = new Set(diverse.map((f2) => f2.factId));
+      for (const s2 of scored) {
+        if (!diverseIds.has(s2.factId)) {
+          diverse.push(s2);
+          if (diverse.length >= limit)
+            break;
+        }
+      }
+    }
+    const results = diverse;
     if (results.length > 0) {
       this.trackRetrieval(results);
     }
@@ -352854,6 +352949,12 @@ class FactRetriever {
       if (word && word.length > 1)
         tokens.add(word);
     }
+    const cnChars = text2.match(/[\u4e00-\u9fff]+/g) ?? [];
+    for (const seg of cnChars) {
+      for (let i4 = 0;i4 < seg.length - 1; i4++) {
+        tokens.add(seg.slice(i4, i4 + 2));
+      }
+    }
     return tokens;
   }
   jaccardSimilarity(a3, b5) {
@@ -352866,6 +352967,16 @@ class FactRetriever {
     }
     const unionSize = a3.size + b5.size - intersection3;
     return unionSize > 0 ? intersection3 / unionSize : 0;
+  }
+  containmentScore(a3, b5) {
+    if (a3.size === 0 || b5.size === 0)
+      return 0;
+    let hits = 0;
+    for (const item of a3) {
+      if (b5.has(item))
+        hits++;
+    }
+    return hits / a3.size;
   }
   temporalDecay(timestampStr) {
     if (!this.halfLifeDays || !timestampStr)
@@ -352905,11 +353016,30 @@ class FactRetriever {
     const words = query2.split(/\s+/).filter((w2) => w2.length > 0);
     if (words.length === 0)
       return [];
-    const conditions = words.map(() => "(f.content LIKE ? OR f.tags LIKE ?)").join(" OR ");
+    const conditions = [];
     const params = [];
     for (const word of words) {
+      conditions.push("(f.content LIKE ? OR f.tags LIKE ?)");
       params.push(`%${word}%`, `%${word}%`);
     }
+    const cnChars = query2.match(/[\u4e00-\u9fff]+/g);
+    if (cnChars) {
+      for (const seg of cnChars) {
+        if (seg.length < 2)
+          continue;
+        for (let i4 = 0;i4 < seg.length - 1; i4++) {
+          const bigram = seg.slice(i4, i4 + 2);
+          conditions.push("(f.content LIKE ? OR f.tags LIKE ?)");
+          params.push(`%${bigram}%`, `%${bigram}%`);
+        }
+        for (let i4 = 0;i4 < seg.length - 2; i4++) {
+          const trigram = seg.slice(i4, i4 + 3);
+          conditions.push("(f.content LIKE ? OR f.tags LIKE ?)");
+          params.push(`%${trigram}%`, `%${trigram}%`);
+        }
+      }
+    }
+    const conditionsSql = conditions.join(" OR ");
     params.push(minTrust);
     let categoryClause = "";
     if (category) {
@@ -352922,7 +353052,7 @@ class FactRetriever {
              f.trust_score, f.retrieval_count, f.helpful_count,
              f.created_at, f.updated_at
       FROM facts f
-      WHERE (${conditions})
+      WHERE (${conditionsSql})
         AND f.trust_score >= ?
         ${categoryClause}
       ORDER BY f.trust_score DESC
@@ -352942,6 +353072,166 @@ class FactRetriever {
       ftsRank: 0.5
     }));
   }
+  charOverlapFallback(query2, category, minTrust, limit) {
+    const cnChars = [...new Set(query2.match(/[\u4e00-\u9fff]/g) ?? [])].filter((c7) => !CN_OVERLAP_STOP.has(c7));
+    if (cnChars.length < 2)
+      return [];
+    const allFacts = this.store.listFacts(category, minTrust, 200);
+    const results = [];
+    for (const fact of allFacts) {
+      const text2 = fact.content + fact.tags;
+      let hits = 0;
+      for (const c7 of cnChars) {
+        if (text2.includes(c7))
+          hits++;
+      }
+      const overlap = hits / cnChars.length;
+      if (overlap >= 0.4) {
+        results.push({ fact, overlap });
+      }
+    }
+    if (results.length === 0)
+      return [];
+    results.sort((a3, b5) => b5.overlap * b5.fact.trustScore - a3.overlap * a3.fact.trustScore);
+    return results.slice(0, limit).map(({ fact, overlap }) => ({
+      ...fact,
+      ftsRank: overlap * 0.8
+    }));
+  }
+  categoryInferFallback(query2, minTrust, limit) {
+    const inferred = this.inferCategory(query2);
+    if (!inferred)
+      return [];
+    const facts = this.store.listFacts(inferred, minTrust, limit);
+    return facts.map((f2, i4) => ({
+      ...f2,
+      score: f2.trustScore * (1 - i4 * 0.05) * 0.7
+    }));
+  }
+  getCategoryTagMap() {
+    if (this._categoryTagMap)
+      return this._categoryTagMap;
+    const map3 = new Map;
+    const allFacts = this.store.listFacts(undefined, 0.2, 200);
+    for (const fact of allFacts) {
+      if (!map3.has(fact.category))
+        map3.set(fact.category, new Set);
+      const tagSet = map3.get(fact.category);
+      for (const tag of fact.tags.split(",")) {
+        const t2 = tag.trim().toLowerCase();
+        if (t2.length >= 2)
+          tagSet.add(t2);
+      }
+      const cnChars = fact.content.match(/[\u4e00-\u9fff]+/g) ?? [];
+      for (const seg of cnChars) {
+        for (let i4 = 0;i4 < seg.length - 1; i4++) {
+          const bg = seg.slice(i4, i4 + 2);
+          if (!CN_OVERLAP_STOP.has(bg[0]) && !CN_OVERLAP_STOP.has(bg[1])) {
+            tagSet.add(bg);
+          }
+        }
+      }
+      const enWords = fact.content.match(/[a-zA-Z]{3,}/g) ?? [];
+      for (const w2 of enWords) {
+        tagSet.add(w2.toLowerCase());
+      }
+    }
+    this._categoryTagMap = map3;
+    return map3;
+  }
+  getCnEnPairs() {
+    if (this._cnEnPairs)
+      return this._cnEnPairs;
+    const candidateMap = new Map;
+    const SEED_PAIRS = [
+      ["\u6293\u53D6", "scraping"],
+      ["\u722C\u866B", "crawler"],
+      ["\u9006\u5411", "reverse"],
+      ["\u90E8\u7F72", "deploy"],
+      ["\u67B6\u6784", "architecture"],
+      ["\u63A5\u53E3", "api"],
+      ["\u6570\u636E\u5E93", "database"],
+      ["\u7F13\u5B58", "cache"],
+      ["\u914D\u7F6E", "config"],
+      ["\u6784\u5EFA", "build"],
+      ["\u7F16\u8BD1", "compile"],
+      ["\u8C03\u8BD5", "debug"],
+      ["\u6D4B\u8BD5", "test"],
+      ["\u63D0\u4EA4", "commit"],
+      ["\u5408\u5E76", "merge"],
+      ["\u7EC8\u7AEF", "terminal"],
+      ["\u547D\u4EE4\u884C", "cli"],
+      ["\u90AE\u7BB1", "email"],
+      ["\u6A21\u578B", "model"],
+      ["\u63D2\u4EF6", "plugin"],
+      ["\u6E10\u53D8", "gradient"]
+    ];
+    for (const [cn, en] of SEED_PAIRS) {
+      this.addPair(candidateMap, cn, en);
+    }
+    const allFacts = this.store.listFacts(undefined, 0.2, 200);
+    for (const fact of allFacts) {
+      const text2 = fact.content + " " + fact.tags;
+      for (const m3 of text2.matchAll(/([\u4e00-\u9fff]{2,4})\s*[\uFF08(]\s*([a-zA-Z]{2,})\s*[)\uFF09]/g))
+        this.addPair(candidateMap, m3[1], m3[2].toLowerCase());
+      for (const m3 of text2.matchAll(/([a-zA-Z]{2,})\s*[\uFF08(]\s*([\u4e00-\u9fff]{2,4})\s*[)\uFF09]/g))
+        this.addPair(candidateMap, m3[2], m3[1].toLowerCase());
+      for (const m3 of text2.matchAll(/([\u4e00-\u9fff]{2,4})\s*[\uFF1A:=]\s*([a-zA-Z]{2,})/g))
+        this.addPair(candidateMap, m3[1], m3[2].toLowerCase());
+      for (const m3 of text2.matchAll(/([a-zA-Z]{2,})\s*[\uFF1A:=]\s*([\u4e00-\u9fff]{2,4})/g))
+        this.addPair(candidateMap, m3[2], m3[1].toLowerCase());
+    }
+    const pairs = [];
+    for (const [cn, enSet] of candidateMap) {
+      if (enSet.size === 1) {
+        const en = [...enSet][0];
+        if (en.length >= 2 && !CN_OVERLAP_STOP.has(cn[0])) {
+          pairs.push([cn, en]);
+        }
+      }
+    }
+    this._cnEnPairs = pairs;
+    return pairs;
+  }
+  addPair(map3, cn, en) {
+    if (!map3.has(cn))
+      map3.set(cn, new Set);
+    map3.get(cn).add(en);
+  }
+  expandQueryBilingually(query2) {
+    const pairs = this.getCnEnPairs();
+    if (pairs.length === 0)
+      return query2;
+    const extras = [];
+    const ql = query2.toLowerCase();
+    for (const [cn, en] of pairs) {
+      if (ql.includes(cn) && !ql.includes(en)) {
+        extras.push(en);
+      }
+      if (ql.includes(en) && !ql.includes(cn)) {
+        extras.push(cn);
+      }
+    }
+    return extras.length > 0 ? `${query2} ${extras.join(" ")}` : query2;
+  }
+  inferCategory(query2) {
+    const tagMap = this.getCategoryTagMap();
+    const q3 = query2.toLowerCase();
+    let bestCategory = null;
+    let bestScore = 0;
+    for (const [cat2, tags] of tagMap) {
+      let score = 0;
+      for (const tag of tags) {
+        if (q3.includes(tag))
+          score++;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestCategory = cat2;
+      }
+    }
+    return bestScore >= 1 ? bestCategory : null;
+  }
   trackRetrieval(facts) {
     if (facts.length === 0)
       return;
@@ -352954,6 +353244,81 @@ class FactRetriever {
     }
   }
 }
+var CN_OVERLAP_STOP;
+var init_FactRetriever = __esm(() => {
+  CN_OVERLAP_STOP = new Set([
+    "\u7684",
+    "\u4E86",
+    "\u662F",
+    "\u5728",
+    "\u6709",
+    "\u548C",
+    "\u5C31",
+    "\u4E0D",
+    "\u4EBA",
+    "\u90FD",
+    "\u4E00",
+    "\u4E2A",
+    "\u4E0A",
+    "\u4E5F",
+    "\u5F88",
+    "\u5230",
+    "\u8BF4",
+    "\u8981",
+    "\u53BB",
+    "\u4F60",
+    "\u4F1A",
+    "\u7740",
+    "\u6CA1",
+    "\u770B",
+    "\u597D",
+    "\u81EA",
+    "\u8FD9",
+    "\u4ED6",
+    "\u5979",
+    "\u5B83",
+    "\u90A3",
+    "\u4E9B",
+    "\u7528",
+    "\u5BF9",
+    "\u4E0B",
+    "\u4E3A",
+    "\u4ECE",
+    "\u88AB",
+    "\u628A",
+    "\u80FD",
+    "\u53EF",
+    "\u4EE5",
+    "\u6240",
+    "\u800C",
+    "\u53C8",
+    "\u4E0E",
+    "\u4F46",
+    "\u6216",
+    "\u7B49",
+    "\u4E2D",
+    "\u5927",
+    "\u5C0F",
+    "\u591A",
+    "\u5C11",
+    "\u5176",
+    "\u4E4B",
+    "\u505A",
+    "\u8BA9",
+    "\u7ED9",
+    "\u5DF2",
+    "\u8FD8",
+    "\u6765",
+    "\u5730",
+    "\u5F97",
+    "\u8FC7",
+    "\u65F6",
+    "\u91CC",
+    "\u540E",
+    "\u524D",
+    "\u5F53"
+  ]);
+});
 
 // src/memory/security.ts
 function scanForInjection(text2) {
@@ -353021,6 +353386,7 @@ import { existsSync as existsSync12, statSync as statSync10, readdirSync as read
 var FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA, MIGRATION_RULES, OVERVIEW_TAG = "project_overview", HolographicProvider;
 var init_HolographicProvider = __esm(() => {
   init_MemoryStore();
+  init_FactRetriever();
   init_security();
   init_types17();
   FACT_STORE_SCHEMA = {
