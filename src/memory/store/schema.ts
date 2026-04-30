@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS facts (
   content         TEXT NOT NULL UNIQUE,
   category        TEXT DEFAULT 'general',
   tags            TEXT DEFAULT '',
+  keywords        TEXT DEFAULT '[]',
   trust_score     REAL DEFAULT 0.5,
   retrieval_count INTEGER DEFAULT 0,
   helpful_count   INTEGER DEFAULT 0,
@@ -47,6 +48,14 @@ CREATE TABLE IF NOT EXISTS doc_index (
   conclusions TEXT NOT NULL DEFAULT '',
   mtime_ms    INTEGER NOT NULL DEFAULT 0,
   updated_at  TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
+-- 类别词频统计表：写入时增量维护，用于计算关键词的类别特异性
+CREATE TABLE IF NOT EXISTS category_token_stats (
+  category TEXT NOT NULL,
+  token    TEXT NOT NULL,
+  df       INTEGER DEFAULT 1,
+  PRIMARY KEY (category, token)
 );
 
 -- FTS5 全文索引（content= 绑定 facts 表）

@@ -110,20 +110,41 @@ export class FactRetriever {
       const allTokens = new Set([...contentTokens, ...tagTokens])
 
       const jaccard = this.jaccardSimilarity(queryTokens, allTokens)
-      // Containment: 查询 token 在事实 token 中的覆盖率（不对称，惩罚长事实的黑洞效应）
-      const containment = this.containmentScore(queryTokens, allTokens)
-      // 混合相似度：Jaccard 和 containment 的加权平均
-      const similarity = 0.3 * jaccard + 0.7 * containment
+      // Containment: 查询 token 在事实 token 中的覆盖率
+      const qInF = this.containmentScore(queryTokens, allTokens)
+
+      // 主题关键词匹配：精准区分"核心主题"和"附带提及"
+      let keywordScore = 0
+      try {
+        const factKeywords = JSON.parse(fact.keywords || '[]') as Array<{ kw: string; w: number }>
+        if (factKeywords.length > 0) {
+          let keywordHit = 0
+          let keywordTotal = 0
+          for (const { kw, w } of factKeywords) {
+            keywordTotal += w
+            if (query.toLowerCase().includes(kw.toLowerCase())) keywordHit += w
+          }
+          const rawKwScore = keywordTotal > 0 ? keywordHit / keywordTotal : 0
+          // 阈值过滤：关键词匹配度低于 0.2 时视为无关，不给分
+          keywordScore = rawKwScore >= 0.2 ? rawKwScore : 0
+        }
+      } catch { /* keywords 解析失败，退化为 0 */ }
+
+      // 混合相似度：Jaccard + Containment + KeywordScore
+      const similarity = 0.20 * jaccard + 0.45 * qInF + 0.35 * keywordScore
       const ftsScore = fact.ftsRank
 
       // 综合评分
       let relevance = this.ftsWeight * ftsScore + this.jaccardWeight * similarity
 
-      // Category 信号加权：如果查询与该事实的 category 高度关联，提升评分
+      // Category 信号乘法强化：信号越集中，该 category 的事实获得越大提升
       const catSig = categorySignal.get(fact.category) ?? 0
-      if (catSig > 0) {
-        // 加法提升：信号越强提升越大
-        relevance += 0.3 * catSig
+      if (catSig > 0 && categorySignal.size > 0) {
+        const maxSig = Math.max(...categorySignal.values())
+        const totalSig = [...categorySignal.values()].reduce((a, b) => a + b, 0)
+        const specificity = maxSig / Math.max(totalSig, 1e-6) // 信号集中度 0~1
+        const sigNorm = catSig / maxSig                         // 归一化信号 0~1
+        relevance *= (1 + 0.5 * specificity * sigNorm)
       }
 
       let score = relevance * fact.trustScore
@@ -220,7 +241,7 @@ export class FactRetriever {
     params.push(limit)
 
     const sql = `
-      SELECT DISTINCT f.fact_id, f.content, f.category, f.tags,
+      SELECT DISTINCT f.fact_id, f.content, f.category, f.tags, f.keywords,
              f.trust_score, f.retrieval_count, f.helpful_count,
              f.created_at, f.updated_at
       FROM facts f
@@ -234,7 +255,7 @@ export class FactRetriever {
     `
 
     const rows = this.db.prepare(sql).all(...params) as Array<{
-      fact_id: number; content: string; category: string; tags: string;
+      fact_id: number; content: string; category: string; tags: string; keywords: string;
       trust_score: number; retrieval_count: number; helpful_count: number;
       created_at: string; updated_at: string;
     }>
@@ -244,6 +265,7 @@ export class FactRetriever {
       content: r.content,
       category: r.category as FactCategory,
       tags: r.tags,
+      keywords: r.keywords ?? '[]',
       trustScore: r.trust_score,
       retrievalCount: r.retrieval_count,
       helpfulCount: r.helpful_count,
@@ -278,13 +300,13 @@ export class FactRetriever {
     }
 
     let rows = this.db.prepare(`
-      SELECT f.fact_id, f.content, f.category, f.tags, f.trust_score,
+      SELECT f.fact_id, f.content, f.category, f.tags, f.keywords, f.trust_score,
              f.created_at, f.updated_at
       FROM facts f
       ${whereClause}
       ORDER BY f.updated_at DESC
     `).all(...params) as Array<{
-      fact_id: number; content: string; category: string; tags: string;
+      fact_id: number; content: string; category: string; tags: string; keywords: string;
       trust_score: number; created_at: string; updated_at: string;
     }>
 
@@ -333,6 +355,7 @@ export class FactRetriever {
             content: r.content,
             category: r.category as FactCategory,
             tags: r.tags,
+            keywords: r.keywords ?? '[]',
             trustScore: r.trust_score,
             retrievalCount: 0,
             helpfulCount: 0,
@@ -428,6 +451,7 @@ export class FactRetriever {
       content: String(row.content),
       category: String(row.category) as FactCategory,
       tags: String(row.tags),
+      keywords: String(row.keywords ?? '[]'),
       trustScore: Number(row.trust_score),
       retrievalCount: Number(row.retrieval_count),
       helpfulCount: Number(row.helpful_count),
@@ -574,7 +598,7 @@ export class FactRetriever {
     params.push(limit)
 
     const sql = `
-      SELECT f.fact_id, f.content, f.category, f.tags,
+      SELECT f.fact_id, f.content, f.category, f.tags, f.keywords,
              f.trust_score, f.retrieval_count, f.helpful_count,
              f.created_at, f.updated_at
       FROM facts f
@@ -586,7 +610,7 @@ export class FactRetriever {
     `
 
     const rows = this.db.prepare(sql).all(...params) as Array<{
-      fact_id: number; content: string; category: string; tags: string;
+      fact_id: number; content: string; category: string; tags: string; keywords: string;
       trust_score: number; retrieval_count: number; helpful_count: number;
       created_at: string; updated_at: string;
     }>
@@ -597,6 +621,7 @@ export class FactRetriever {
       content: r.content,
       category: r.category as FactCategory,
       tags: r.tags,
+      keywords: r.keywords ?? '[]',
       trustScore: r.trust_score,
       retrievalCount: r.retrieval_count,
       helpfulCount: r.helpful_count,

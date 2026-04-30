@@ -99,6 +99,9 @@ ocean --permission-mode auto
 - **实体自动提取** — 中英文实体识别 + 自动分类（person/technology/topic），基于实体做关联检索和矛盾检测
 - **需求变更自动降权** — 实体 JOIN 矛盾检测 + Jaccard 纯文本矛盾扫描（双通道），同主题内容冲突时自动降权旧事实，新需求自动覆盖旧设计
 - **FTS5 + 中文 bigram** — 写入时预分词，毫秒级本地检索，不依赖 API
+- **主题关键词提取** — 写入时从 tags+content 自动提取 3-8 个主题关键词，查询时精准区分"核心主题"和"附带提及"，缓解 general 黑洞效应
+- **五层递进式检索管线** — FTS5 MATCH → LIKE(含中文子串分解) → 字符级交叉匹配 → 分类推断 → trust fallback，弱模型模糊查询语义命中率 75%
+- **查询双语扩展** — 种子术语表 + 事实库自动提取（括号注释/分隔符关联），中文查询自动追加英文术语，英文查询追加中文
 - **信任评分机制** — helpful +0.05 / unhelpful -0.10，低信任（<0.5）事实自动排除在注入之外
 - **五种高级检索** — search / probe / reason / related / contradict，支持语义搜索、实体关联、冲突检测
 - **三层隔离保障** — 路由与分类解耦，category标签由AI标注（允许偏差），存储位置由内容级检测确定性地决定，防止项目知识污染全局库
@@ -126,7 +129,7 @@ ocean --permission-mode auto
 <details>
 <summary>SQLite 表结构详解</summary>
 
-每个数据库包含 3 张核心表 + 1 个 FTS5 虚拟表：
+每个数据库包含 4 张核心表 + 1 个 FTS5 虚拟表 + 1 个统计表：
 
 **`facts` — 事实表**
 存储所有记忆事实，每条事实独立成行，支持信任评分和检索统计。
@@ -137,6 +140,7 @@ ocean --permission-mode auto
 | `content` | TEXT UNIQUE | 事实内容（唯一约束防重复） |
 | `category` | TEXT | 分类：identity / coding_style / tool_pref / workflow / project / general |
 | `tags` | TEXT | 逗号分隔标签（含中文 bigram 预分词结果） |
+| `keywords` | TEXT | 主题关键词 JSON（写入时自动提取，如 `[{"kw":"邮箱","w":0.9}]`） |
 | `trust_score` | REAL | 信任评分（0.0~1.0，默认 0.5） |
 | `retrieval_count` | INTEGER | 被检索次数 |
 | `helpful_count` | INTEGER | 被标记 helpful 次数 |
@@ -175,6 +179,17 @@ ocean --permission-mode auto
 | `tags` | 同步自 facts.tags（含 bigram 预分词） |
 
 > 三个触发器（INSERT/UPDATE/DELETE）保证 FTS5 索引与 facts 表实时同步
+
+**`category_token_stats` — 类别词频统计表**
+增量维护每个 token 在各 category 中的文档频率，用于计算关键词的类别特异性权重。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `category` | TEXT | 分类名 |
+| `token` | TEXT | 关键词 token |
+| `df` | INTEGER | 文档频率（该 token 在该 category 中出现的事实数） |
+
+> 联合主键 `(category, token)`，ON CONFLICT 时 `df = df + 1`
 
 </details>
 
@@ -329,6 +344,14 @@ ocean -p "your prompt"         # 无头模式
 ---
 
 ## 更新日志
+
+### v1.5.3
+- 主题关键词提取：写入时从 tags + 英文单词 + 引号内容自动提取 5-8 个主题关键词（位置权重 × 频率权重 × 类别特异性 × Tags 加权），查询时精准区分"核心主题"和"附带提及"，缓解 general 黑洞效应
+- 五层递进式检索管线：FTS5 MATCH → LIKE（含中文子串分解）→ 字符级交叉匹配 → 分类推断 → trust fallback，弱模型模糊查询语义命中率 75%
+- 查询双语扩展：种子术语表 + 事实库自动提取（括号注释/分隔符关联），中文查询自动追加英文术语，英文查询追加中文
+- Category 信号乘法强化：IDF 式加权 + 信号集中度归一化，查询信号集中时该 category 事实获得 ~1.5x 乘法提升
+- 新增 `category_token_stats` 表：增量维护 token 类别文档频率，支持关键词类别特异性计算
+- `backfillKeywords()` 启动时补算已有事实的关键词
 
 ### v1.5.2
 - 三层递进式去重管线：层1实体+编辑距离 → 层2 Jaccard bigram（≥0.45） → 层3 Containment包含率（≥0.8），彻底解决多模型切换导致的中文事实重复问题

@@ -351935,6 +351935,7 @@ CREATE TABLE IF NOT EXISTS facts (
   content         TEXT NOT NULL UNIQUE,
   category        TEXT DEFAULT 'general',
   tags            TEXT DEFAULT '',
+  keywords        TEXT DEFAULT '[]',
   trust_score     REAL DEFAULT 0.5,
   retrieval_count INTEGER DEFAULT 0,
   helpful_count   INTEGER DEFAULT 0,
@@ -351971,6 +351972,14 @@ CREATE TABLE IF NOT EXISTS doc_index (
   conclusions TEXT NOT NULL DEFAULT '',
   mtime_ms    INTEGER NOT NULL DEFAULT 0,
   updated_at  TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
+-- \u7C7B\u522B\u8BCD\u9891\u7EDF\u8BA1\u8868\uFF1A\u5199\u5165\u65F6\u589E\u91CF\u7EF4\u62A4\uFF0C\u7528\u4E8E\u8BA1\u7B97\u5173\u952E\u8BCD\u7684\u7C7B\u522B\u7279\u5F02\u6027
+CREATE TABLE IF NOT EXISTS category_token_stats (
+  category TEXT NOT NULL,
+  token    TEXT NOT NULL,
+  df       INTEGER DEFAULT 1,
+  PRIMARY KEY (category, token)
 );
 
 -- FTS5 \u5168\u6587\u7D22\u5F15\uFF08content= \u7ED1\u5B9A facts \u8868\uFF09
@@ -352029,9 +352038,23 @@ class MemoryStore {
   }
   initSchema() {
     this.db.exec(SCHEMA);
+    this.migrateSchema();
+  }
+  migrateSchema() {
+    try {
+      this.db.exec("ALTER TABLE facts ADD COLUMN keywords TEXT DEFAULT '[]'");
+    } catch {}
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS category_token_stats (
+        category TEXT NOT NULL,
+        token    TEXT NOT NULL,
+        df       INTEGER DEFAULT 1,
+        PRIMARY KEY (category, token)
+      )
+    `);
   }
   prepareStatements() {
-    this.stmtInsertFact = this.db.prepare("INSERT INTO facts (content, category, tags, trust_score) VALUES (?, ?, ?, ?)");
+    this.stmtInsertFact = this.db.prepare("INSERT INTO facts (content, category, tags, keywords, trust_score) VALUES (?, ?, ?, ?, ?)");
     this.stmtFindFactByContent = this.db.prepare("SELECT fact_id FROM facts WHERE content = ?");
     this.stmtFindEntityByName = this.db.prepare("SELECT entity_id FROM entities WHERE name = ?");
     this.stmtFindEntityByAlias = this.db.prepare("SELECT entity_id FROM entities WHERE ',' || aliases || ',' LIKE '%,' || ? || ',%'");
@@ -352047,9 +352070,10 @@ class MemoryStore {
     if (!trimmed)
       throw new Error("content must not be empty");
     const enhancedTags = this.enhanceTagsForChinese(trimmed, tags);
+    const keywords = this.extractKeywords(trimmed, category, tags);
     const insertFacts = this.db.transaction(() => {
       try {
-        const info = this.stmtInsertFact.run(trimmed, category, enhancedTags, this.defaultTrust);
+        const info = this.stmtInsertFact.run(trimmed, category, enhancedTags, keywords, this.defaultTrust);
         const factId = Number(info.lastInsertRowid);
         const entities = this.extractEntities(trimmed);
         for (const name of entities) {
@@ -352203,7 +352227,7 @@ class MemoryStore {
     }
     params.push(limit);
     const sql = `
-      SELECT fact_id, content, category, tags, trust_score,
+      SELECT fact_id, content, category, tags, keywords, trust_score,
              retrieval_count, helpful_count, created_at, updated_at
       FROM facts
       WHERE trust_score >= ?
@@ -352242,7 +352266,7 @@ class MemoryStore {
     }
     params.push(limit);
     const sql = `
-      SELECT f.fact_id, f.content, f.category, f.tags, f.trust_score,
+      SELECT f.fact_id, f.content, f.category, f.tags, f.keywords, f.trust_score,
              f.retrieval_count, f.helpful_count, f.created_at, f.updated_at
       FROM facts f
       JOIN fact_entities fe ON f.fact_id = fe.fact_id
@@ -352269,7 +352293,7 @@ class MemoryStore {
     }
     params.push(limit);
     const sql = `
-      SELECT f.fact_id, f.content, f.category, f.tags, f.trust_score,
+      SELECT f.fact_id, f.content, f.category, f.tags, f.keywords, f.trust_score,
              f.retrieval_count, f.helpful_count, f.created_at, f.updated_at
       FROM facts f
       WHERE f.fact_id IN (${intersects})
@@ -352483,6 +352507,92 @@ class MemoryStore {
     const existingTags = tags ? tags + "," : "";
     return existingTags + bigrams.join(",");
   }
+  extractKeywords(content, category, tags = "") {
+    const tokens = this.tokenizeForKeywords(content, tags);
+    if (tokens.size === 0)
+      return "[]";
+    const lowerContent = content.toLowerCase();
+    const tokenInfo = new Map;
+    for (const token of tokens) {
+      const idx = lowerContent.indexOf(token);
+      let freq = 0;
+      let pos = 0;
+      const tl = token.length;
+      while (true) {
+        const found = lowerContent.indexOf(token, pos);
+        if (found === -1)
+          break;
+        freq++;
+        pos = found + tl;
+      }
+      const fromTags = tags.toLowerCase().includes(token);
+      tokenInfo.set(token, { freq: Math.max(freq, 1), firstPos: idx === -1 ? content.length : idx, fromTags });
+    }
+    const tokenCategoryCount = new Map;
+    const catStats = this.db.prepare("SELECT token, COUNT(DISTINCT category) as cat_count FROM category_token_stats GROUP BY token").all();
+    for (const row of catStats) {
+      tokenCategoryCount.set(row.token, row.cat_count);
+    }
+    const contentLen = content.length;
+    const scored = [];
+    for (const [token, info] of tokenInfo) {
+      const posRatio = info.firstPos / Math.max(contentLen, 1);
+      const positionScore = posRatio < 0.3 ? 1.5 : posRatio < 0.7 ? 1 : 0.7;
+      const frequencyScore = info.freq >= 2 ? 1.3 : 1;
+      const catCount = tokenCategoryCount.get(token) ?? 0;
+      const specificityScore = catCount === 0 ? 2 : catCount === 1 ? 1.5 : catCount === 2 ? 1 : 0.5;
+      const tagsBonus = info.fromTags ? 1.5 : 1;
+      const total = positionScore * frequencyScore * specificityScore * tagsBonus;
+      scored.push({ kw: token, score: total });
+    }
+    scored.sort((a3, b5) => b5.score - a3.score);
+    const topN = scored.slice(0, Math.min(8, Math.max(5, Math.ceil(tokens.size * 0.3))));
+    if (topN.length === 0)
+      return "[]";
+    const maxScore = topN[0].score;
+    const minScore = topN[topN.length - 1].score;
+    const keywords = topN.map(({ kw, score }) => {
+      const w2 = maxScore === minScore ? 1 : 0.3 + 0.7 * (score - minScore) / (maxScore - minScore);
+      return { kw, w: Math.round(w2 * 100) / 100 };
+    });
+    for (const token of tokens) {
+      this.db.prepare(`INSERT INTO category_token_stats (category, token, df) VALUES (?, ?, 1)
+         ON CONFLICT(category, token) DO UPDATE SET df = df + 1`).run(category, token);
+    }
+    return JSON.stringify(keywords);
+  }
+  tokenizeForKeywords(content, tags) {
+    const tokens = new Set;
+    for (const tag of tags.split(",")) {
+      const t2 = tag.trim().toLowerCase();
+      if (t2.length >= 2)
+        tokens.add(t2);
+      if (t2.includes("-")) {
+        for (const part of t2.split("-")) {
+          if (part.length >= 2)
+            tokens.add(part);
+        }
+      }
+    }
+    const enWords = content.match(/[a-zA-Z]{3,}/g) ?? [];
+    for (const w2 of enWords)
+      tokens.add(w2.toLowerCase());
+    for (const m3 of content.matchAll(/[""\u300C\u300D]([^""\u300C\u300D]{2,12})[""\u300C\u300D]/g))
+      tokens.add(m3[1]);
+    for (const m3 of content.matchAll(/\u300A([^\u300B]{2,12})\u300B/g))
+      tokens.add(m3[1]);
+    return tokens;
+  }
+  backfillKeywords() {
+    const rows = this.db.prepare("SELECT fact_id, content, category, tags FROM facts WHERE keywords = '[]'").all();
+    let count3 = 0;
+    for (const row of rows) {
+      const keywords = this.extractKeywords(row.content, row.category, row.tags);
+      this.db.prepare("UPDATE facts SET keywords = ? WHERE fact_id = ?").run(keywords, row.fact_id);
+      count3++;
+    }
+    return count3;
+  }
   classifyEntity(name) {
     if (/[A-Za-z]/.test(name))
       return "technology";
@@ -352554,6 +352664,7 @@ class MemoryStore {
       content: row.content,
       category: row.category,
       tags: row.tags,
+      keywords: row.keywords,
       trustScore: row.trust_score,
       retrievalCount: row.retrieval_count,
       helpfulCount: row.helpful_count,
@@ -352697,13 +352808,32 @@ class FactRetriever {
       const tagTokens = this.tokenize(fact.tags);
       const allTokens = new Set([...contentTokens, ...tagTokens]);
       const jaccard = this.jaccardSimilarity(queryTokens, allTokens);
-      const containment = this.containmentScore(queryTokens, allTokens);
-      const similarity = 0.3 * jaccard + 0.7 * containment;
+      const qInF = this.containmentScore(queryTokens, allTokens);
+      let keywordScore = 0;
+      try {
+        const factKeywords = JSON.parse(fact.keywords || "[]");
+        if (factKeywords.length > 0) {
+          let keywordHit = 0;
+          let keywordTotal = 0;
+          for (const { kw, w: w2 } of factKeywords) {
+            keywordTotal += w2;
+            if (query2.toLowerCase().includes(kw.toLowerCase()))
+              keywordHit += w2;
+          }
+          const rawKwScore = keywordTotal > 0 ? keywordHit / keywordTotal : 0;
+          keywordScore = rawKwScore >= 0.2 ? rawKwScore : 0;
+        }
+      } catch {}
+      const similarity = 0.2 * jaccard + 0.45 * qInF + 0.35 * keywordScore;
       const ftsScore = fact.ftsRank;
       let relevance = this.ftsWeight * ftsScore + this.jaccardWeight * similarity;
       const catSig = categorySignal.get(fact.category) ?? 0;
-      if (catSig > 0) {
-        relevance += 0.3 * catSig;
+      if (catSig > 0 && categorySignal.size > 0) {
+        const maxSig = Math.max(...categorySignal.values());
+        const totalSig = [...categorySignal.values()].reduce((a3, b5) => a3 + b5, 0);
+        const specificity = maxSig / Math.max(totalSig, 0.000001);
+        const sigNorm = catSig / maxSig;
+        relevance *= 1 + 0.5 * specificity * sigNorm;
       }
       let score = relevance * fact.trustScore;
       if (this.halfLifeDays > 0) {
@@ -352778,7 +352908,7 @@ class FactRetriever {
     }
     params.push(limit);
     const sql = `
-      SELECT DISTINCT f.fact_id, f.content, f.category, f.tags,
+      SELECT DISTINCT f.fact_id, f.content, f.category, f.tags, f.keywords,
              f.trust_score, f.retrieval_count, f.helpful_count,
              f.created_at, f.updated_at
       FROM facts f
@@ -352796,6 +352926,7 @@ class FactRetriever {
       content: r2.content,
       category: r2.category,
       tags: r2.tags,
+      keywords: r2.keywords ?? "[]",
       trustScore: r2.trust_score,
       retrievalCount: r2.retrieval_count,
       helpfulCount: r2.helpful_count,
@@ -352824,7 +352955,7 @@ class FactRetriever {
       params.push(category);
     }
     let rows = this.db.prepare(`
-      SELECT f.fact_id, f.content, f.category, f.tags, f.trust_score,
+      SELECT f.fact_id, f.content, f.category, f.tags, f.keywords, f.trust_score,
              f.created_at, f.updated_at
       FROM facts f
       ${whereClause}
@@ -352864,6 +352995,7 @@ class FactRetriever {
             content: r2.content,
             category: r2.category,
             tags: r2.tags,
+            keywords: r2.keywords ?? "[]",
             trustScore: r2.trust_score,
             retrievalCount: 0,
             helpfulCount: 0,
@@ -352932,6 +353064,7 @@ class FactRetriever {
       content: String(row.content),
       category: String(row.category),
       tags: String(row.tags),
+      keywords: String(row.keywords ?? "[]"),
       trustScore: Number(row.trust_score),
       retrievalCount: Number(row.retrieval_count),
       helpfulCount: Number(row.helpful_count),
@@ -353048,7 +353181,7 @@ class FactRetriever {
     }
     params.push(limit);
     const sql = `
-      SELECT f.fact_id, f.content, f.category, f.tags,
+      SELECT f.fact_id, f.content, f.category, f.tags, f.keywords,
              f.trust_score, f.retrieval_count, f.helpful_count,
              f.created_at, f.updated_at
       FROM facts f
@@ -353064,6 +353197,7 @@ class FactRetriever {
       content: r2.content,
       category: r2.category,
       tags: r2.tags,
+      keywords: r2.keywords ?? "[]",
       trustScore: r2.trust_score,
       retrievalCount: r2.retrieval_count,
       helpfulCount: r2.helpful_count,

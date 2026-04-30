@@ -27,6 +27,7 @@ export interface Fact {
   content: string
   category: FactCategory
   tags: string
+  keywords: string
   trustScore: number
   retrievalCount: number
   helpfulCount: number

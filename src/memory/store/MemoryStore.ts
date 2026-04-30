@@ -61,6 +61,7 @@ interface FactRow {
   content: string
   category: string
   tags: string
+  keywords: string
   trust_score: number
   retrieval_count: number
   helpful_count: number
@@ -102,11 +103,30 @@ export class MemoryStore {
 
   private initSchema(): void {
     this.db.exec(SCHEMA)
+    // 增量迁移：为已有数据库添加新列/新表
+    this.migrateSchema()
+  }
+
+  /** 增量迁移：添加新列（已存在则跳过） */
+  private migrateSchema(): void {
+    // keywords 列（v2）
+    try {
+      this.db.exec('ALTER TABLE facts ADD COLUMN keywords TEXT DEFAULT \'[]\'')
+    } catch { /* 列已存在 */ }
+    // category_token_stats 表（v2）
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS category_token_stats (
+        category TEXT NOT NULL,
+        token    TEXT NOT NULL,
+        df       INTEGER DEFAULT 1,
+        PRIMARY KEY (category, token)
+      )
+    `)
   }
 
   private prepareStatements(): void {
     this.stmtInsertFact = this.db.prepare(
-      'INSERT INTO facts (content, category, tags, trust_score) VALUES (?, ?, ?, ?)'
+      'INSERT INTO facts (content, category, tags, keywords, trust_score) VALUES (?, ?, ?, ?, ?)'
     )
     this.stmtFindFactByContent = this.db.prepare(
       'SELECT fact_id FROM facts WHERE content = ?'
@@ -144,10 +164,12 @@ export class MemoryStore {
 
     // 将中文 bigram 追加到 tags，让 FTS5 能索引中文词组
     const enhancedTags = this.enhanceTagsForChinese(trimmed, tags)
+    // 提取主题关键词
+    const keywords = this.extractKeywords(trimmed, category, tags)
 
     const insertFacts = this.db.transaction(() => {
       try {
-        const info = this.stmtInsertFact.run(trimmed, category, enhancedTags, this.defaultTrust)
+        const info = this.stmtInsertFact.run(trimmed, category, enhancedTags, keywords, this.defaultTrust)
         const factId = Number(info.lastInsertRowid)
 
         // 实体提取和关联（只从内容中提取，不从 tags 提取）
@@ -349,7 +371,7 @@ export class MemoryStore {
     params.push(limit)
 
     const sql = `
-      SELECT fact_id, content, category, tags, trust_score,
+      SELECT fact_id, content, category, tags, keywords, trust_score,
              retrieval_count, helpful_count, created_at, updated_at
       FROM facts
       WHERE trust_score >= ?
@@ -398,7 +420,7 @@ export class MemoryStore {
     params.push(limit)
 
     const sql = `
-      SELECT f.fact_id, f.content, f.category, f.tags, f.trust_score,
+      SELECT f.fact_id, f.content, f.category, f.tags, f.keywords, f.trust_score,
              f.retrieval_count, f.helpful_count, f.created_at, f.updated_at
       FROM facts f
       JOIN fact_entities fe ON f.fact_id = fe.fact_id
@@ -433,7 +455,7 @@ export class MemoryStore {
     params.push(limit)
 
     const sql = `
-      SELECT f.fact_id, f.content, f.category, f.tags, f.trust_score,
+      SELECT f.fact_id, f.content, f.category, f.tags, f.keywords, f.trust_score,
              f.retrieval_count, f.helpful_count, f.created_at, f.updated_at
       FROM facts f
       WHERE f.fact_id IN (${intersects})
@@ -729,6 +751,131 @@ export class MemoryStore {
     return existingTags + bigrams.join(',')
   }
 
+  /**
+   * 从 content + tags 提取主题关键词。
+   * 核心思路：tags 是人工/LLM 写的有意义标签，质量远高于自动 N-gram 切分。
+   * 英文单词也从 content 提取（技术术语如 scraping/playwright/obsidian）。
+   * 算法：位置权重 × 频率权重 × 类别特异性权重
+   * 返回 JSON 数组 [{"kw":"邮箱","w":0.9}, ...]
+   */
+  extractKeywords(content: string, category: FactCategory, tags = ''): string {
+    const tokens = this.tokenizeForKeywords(content, tags)
+    if (tokens.size === 0) return '[]'
+
+    // 统计 token 在 content 中的频率和首次出现位置
+    const lowerContent = content.toLowerCase()
+    const tokenInfo = new Map<string, { freq: number; firstPos: number; fromTags: boolean }>()
+    for (const token of tokens) {
+      const idx = lowerContent.indexOf(token)
+      let freq = 0
+      let pos = 0
+      const tl = token.length
+      while (true) {
+        const found = lowerContent.indexOf(token, pos)
+        if (found === -1) break
+        freq++
+        pos = found + tl
+      }
+      const fromTags = tags.toLowerCase().includes(token)
+      tokenInfo.set(token, { freq: Math.max(freq, 1), firstPos: idx === -1 ? content.length : idx, fromTags })
+    }
+
+    // 查询类别词频统计
+    const tokenCategoryCount = new Map<string, number>()
+    const catStats = this.db.prepare('SELECT token, COUNT(DISTINCT category) as cat_count FROM category_token_stats GROUP BY token').all() as Array<{ token: string; cat_count: number }>
+    for (const row of catStats) {
+      tokenCategoryCount.set(row.token, row.cat_count)
+    }
+
+    const contentLen = content.length
+    const scored: Array<{ kw: string; score: number }> = []
+
+    for (const [token, info] of tokenInfo) {
+      // 位置权重
+      const posRatio = info.firstPos / Math.max(contentLen, 1)
+      const positionScore = posRatio < 0.3 ? 1.5 : posRatio < 0.7 ? 1.0 : 0.7
+
+      // 频率权重
+      const frequencyScore = info.freq >= 2 ? 1.3 : 1.0
+
+      // 类别特异性
+      const catCount = tokenCategoryCount.get(token) ?? 0
+      const specificityScore = catCount === 0 ? 2.0 : catCount === 1 ? 1.5 : catCount === 2 ? 1.0 : 0.5
+
+      // Tags 加权：来自 tags 的 token 更有代表性（tags 是人工标注的）
+      const tagsBonus = info.fromTags ? 1.5 : 1.0
+
+      const total = positionScore * frequencyScore * specificityScore * tagsBonus
+      scored.push({ kw: token, score: total })
+    }
+
+    // 按得分取 top 5-8
+    scored.sort((a, b) => b.score - a.score)
+    const topN = scored.slice(0, Math.min(8, Math.max(5, Math.ceil(tokens.size * 0.3))))
+
+    if (topN.length === 0) return '[]'
+
+    // 归一化 weight 到 [0.3, 1.0]
+    const maxScore = topN[0].score
+    const minScore = topN[topN.length - 1].score
+    const keywords = topN.map(({ kw, score }) => {
+      const w = maxScore === minScore ? 1.0 : 0.3 + 0.7 * (score - minScore) / (maxScore - minScore)
+      return { kw, w: Math.round(w * 100) / 100 }
+    })
+
+    // 更新 category_token_stats
+    for (const token of tokens) {
+      this.db.prepare(
+        `INSERT INTO category_token_stats (category, token, df) VALUES (?, ?, 1)
+         ON CONFLICT(category, token) DO UPDATE SET df = df + 1`
+      ).run(category, token)
+    }
+
+    return JSON.stringify(keywords)
+  }
+
+  /** 关键词提取专用分词：tags 标签 + content 英文单词 + 引号包裹内容 */
+  private tokenizeForKeywords(content: string, tags: string): Set<string> {
+    const tokens = new Set<string>()
+
+    // 1. Tags 是最高质量的关键词来源（人工/LLM 标注）
+    for (const tag of tags.split(',')) {
+      const t = tag.trim().toLowerCase()
+      if (t.length >= 2) tokens.add(t)
+      // 处理复合标签如 "web-scraping" → "web", "scraping"
+      if (t.includes('-')) {
+        for (const part of t.split('-')) {
+          if (part.length >= 2) tokens.add(part)
+        }
+      }
+    }
+
+    // 2. 英文单词（≥3 字母，技术术语）
+    const enWords = content.match(/[a-zA-Z]{3,}/g) ?? []
+    for (const w of enWords) tokens.add(w.toLowerCase())
+
+    // 3. 引号/书名号包裹的内容（有意义的术语）
+    for (const m of content.matchAll(/[""「」]([^""「」]{2,12})[""「」]/g)) tokens.add(m[1])
+    for (const m of content.matchAll(/《([^》]{2,12})》/g)) tokens.add(m[1])
+
+    return tokens
+  }
+
+  /** 补算已有事实的关键词（启动时调用） */
+  backfillKeywords(): number {
+    const rows = this.db.prepare(
+      "SELECT fact_id, content, category, tags FROM facts WHERE keywords = '[]'"
+    ).all() as Array<{ fact_id: number; content: string; category: string; tags: string }>
+
+    let count = 0
+    for (const row of rows) {
+      const keywords = this.extractKeywords(row.content, row.category as FactCategory, row.tags)
+      this.db.prepare('UPDATE facts SET keywords = ? WHERE fact_id = ?').run(keywords, row.fact_id)
+      count++
+    }
+    return count
+  }
+
   /** 实体类型分类 */
   private classifyEntity(name: string): string {
     // 含英文 → technology
@@ -823,6 +970,7 @@ export class MemoryStore {
       content: row.content,
       category: row.category as FactCategory,
       tags: row.tags,
+      keywords: row.keywords,
       trustScore: row.trust_score,
       retrievalCount: row.retrieval_count,
       helpfulCount: row.helpful_count,
