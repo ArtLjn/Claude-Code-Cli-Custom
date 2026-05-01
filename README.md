@@ -287,6 +287,40 @@ ocean -p "your prompt"         # 无头模式
 
 ---
 
+## IDE 集成
+
+Ocean CLI 可替换 Claude Code 官方 CLI，在 IDE 插件中直接使用。安装 Ocean 后，按以下步骤配置你的 IDE：
+
+### VS Code / Cursor / Trae CN
+
+安装 Claude Code 扩展后，在 IDE 的 `settings.json` 中添加：
+
+```json
+{
+  "claudeCode.claudeProcessWrapper": "/Users/<你的用户名>/.local/bin/ocean"
+}
+```
+
+> **配置文件路径**：
+> - VS Code：`~/.vscode/settings.json`（全局）或项目 `.vscode/settings.json`
+> - Cursor：`~/.cursor/settings.json`（全局）或项目 `.cursor/settings.json`
+> - Trae CN：`~/.trae-cn/settings.json`（全局）或项目 `.trae/settings.json`
+
+### JetBrains（IntelliJ / PyCharm / WebStorm 等）
+
+1. 打开 **Settings → Tools → Claude Code [Beta]**
+2. 将 **Claude command** 修改为 `ocean`（确保 `~/.local/bin` 在 PATH 中）
+
+### Qoder
+
+与 VS Code 方式相同，在 Qoder 的 `settings.json` 中配置 `claudeCode.claudeProcessWrapper`。
+
+### 验证配置
+
+启动 IDE 中的 Claude Code 面板，输入 `/model`，如果看到 Ocean CLI 的模型列表（含自定义 Provider），说明配置成功。
+
+---
+
 ## 技术栈
 
 | 类别 | 技术 |
