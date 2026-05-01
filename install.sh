@@ -5,7 +5,22 @@
 set -euo pipefail
 
 # ── 配置 ──────────────────────────────────────────────────────
-REPO_URL="${OCEAN_REPO_URL:-https://github.com/ArtLjn/ocean-cc-cli.git}"
+# 国内镜像支持：设置 OCEAN_MIRROR=cn 自动使用 ghproxy 代理
+MIRROR="${OCEAN_MIRROR:-}"
+DEFAULT_REPO="https://github.com/ArtLjn/ocean-cc-cli.git"
+
+# 镜像代理函数
+mirror_url() {
+  local url="$1"
+  if [ "$MIRROR" = "cn" ]; then
+    # 优先尝试较快的镜像，失败时回退
+    echo "https://ghps.cc/$url"
+  else
+    echo "$url"
+  fi
+}
+
+REPO_URL="${OCEAN_REPO_URL:-$(mirror_url "$DEFAULT_REPO")}"
 INSTALL_DIR="${OCEAN_INSTALL_DIR:-$HOME/.ocean-cli}"
 BIN_DIR="$HOME/.local/bin"
 BUN_MIN_VERSION="1.3.5"

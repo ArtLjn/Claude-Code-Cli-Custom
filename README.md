@@ -266,6 +266,23 @@ curl -fsSL https://raw.githubusercontent.com/ArtLjn/ocean-cc-cli/main/install.sh
 
 > 脚本会自动安装 Bun、克隆仓库、构建并部署到 `~/.local/bin/ocean`。
 
+### 国内用户安装
+
+国内访问 GitHub 较慢，使用 ghproxy 镜像代理：
+
+```bash
+curl -fsSL https://ghps.cc/https://raw.githubusercontent.com/ArtLjn/ocean-cc-cli/main/install.sh | OCEAN_MIRROR=cn bash
+```
+
+或先克隆到本地再执行：
+
+```bash
+# 通过镜像克隆
+git clone --depth 1 https://ghps.cc/https://github.com/ArtLjn/ocean-cc-cli.git
+cd ocean-cc-cli
+bash ./install.sh
+```
+
 ### 手动安装
 
 ```bash
