@@ -258,30 +258,35 @@ ocean --channels server:feishu
 
 ## 快速开始
 
-### 一键安装（推荐）
+### macOS / Linux（一键安装）
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ArtLjn/ocean-cc-cli/main/install.sh | bash
 ```
 
-> 脚本会自动安装 Bun、克隆仓库、构建并部署到 `~/.local/bin/ocean`。
+> 脚本会自动检测平台、安装 Bun、克隆仓库、构建并部署到 `~/.local/bin/ocean`。
 
-### 国内用户安装
+### 国内用户（Gitee 镜像）
 
-国内访问 GitHub 较慢，使用 ghproxy 镜像代理：
-
-```bash
-curl -fsSL https://ghps.cc/https://raw.githubusercontent.com/ArtLjn/ocean-cc-cli/main/install.sh | OCEAN_MIRROR=cn bash
-```
-
-或先克隆到本地再执行：
+国内访问 GitHub 较慢，脚本内置多源回退，优先从 Gitee 拉取：
 
 ```bash
-# 通过镜像克隆
-git clone --depth 1 https://ghps.cc/https://github.com/ArtLjn/ocean-cc-cli.git
-cd ocean-cc-cli
-bash ./install.sh
+curl -fsSL https://gitee.com/morning-ljn/ocean-cc-cli/raw/main/install.sh | bash
 ```
+
+### Windows（PowerShell）
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/ArtLjn/ocean-cc-cli/main/install.ps1 | iex
+```
+
+国内用户：
+
+```powershell
+iwr -useb https://gitee.com/morning-ljn/ocean-cc-cli/raw/main/install.ps1 | iex
+```
+
+> Windows 安装使用 Bun 直接运行，无需 C 编译器。推荐在 WSL 中使用 bash 脚本获得完整体验。
 
 ### 手动安装
 
@@ -289,8 +294,9 @@ bash ./install.sh
 # 1. 安装 Bun
 curl -fsSL https://bun.sh/install | bash
 
-# 2. 克隆并构建
+# 2. 克隆并构建（国内用 Gitee）
 git clone https://github.com/ArtLjn/ocean-cc-cli.git && cd ocean-cc-cli
+# git clone https://gitee.com/morning-ljn/ocean-cc-cli.git && cd ocean-cc-cli
 bun install && ./build.sh
 ```
 
