@@ -115,8 +115,8 @@ export type ThemeSetting = (typeof THEME_SETTINGS)[number]
 const lightTheme: Theme = {
   autoAccept: 'rgb(135,0,255)', // Electric violet
   bashBorder: 'rgb(255,0,135)', // Vibrant pink
-  claude: 'rgb(215,119,87)', // Claude orange
-  claudeShimmer: 'rgb(245,149,117)', // Lighter claude orange for shimmer effect
+  claude: 'rgb(96,165,250)', // Claude orange
+  claudeShimmer: 'rgb(147,197,253)', // Lighter claude orange for shimmer effect
   claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(87,105,247)', // Medium blue for system spinner
   claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(117,135,255)', // Lighter blue for system spinner shimmer
   permission: 'rgb(87,105,247)', // Medium blue
@@ -158,7 +158,7 @@ const lightTheme: Theme = {
   // Chrome colors
   chromeYellow: 'rgb(251,188,4)', // Chrome yellow
   // TUI V2 colors
-  clawd_body: 'rgb(215,119,87)',
+  clawd_body: 'rgb(96,165,250)',
   clawd_background: 'rgb(0,0,0)',
   userMessageBackground: 'rgb(240, 240, 240)', // Slightly darker grey for optimal contrast
   userMessageBackgroundHover: 'rgb(252, 252, 252)', // ≥250 to quantize distinct from base at 256-color level
@@ -173,7 +173,7 @@ const lightTheme: Theme = {
   fastModeShimmer: 'rgb(255,150,50)', // Lighter orange for shimmer
   // Brief/assistant mode
   briefLabelYou: 'rgb(37,99,235)', // Blue
-  briefLabelClaude: 'rgb(215,119,87)', // Brand orange
+  briefLabelClaude: 'rgb(96,165,250)', // Brand orange
   rainbow_red: 'rgb(235,95,87)',
   rainbow_orange: 'rgb(245,139,87)',
   rainbow_yellow: 'rgb(250,195,95)',
@@ -359,8 +359,8 @@ const darkAnsiTheme: Theme = {
 const lightDaltonizedTheme: Theme = {
   autoAccept: 'rgb(135,0,255)', // Electric violet
   bashBorder: 'rgb(0,102,204)', // Blue instead of pink
-  claude: 'rgb(255,153,51)', // Orange adjusted for deuteranopia
-  claudeShimmer: 'rgb(255,183,101)', // Lighter orange for shimmer effect
+  claude: 'rgb(96,165,250)', // Orange adjusted for deuteranopia
+  claudeShimmer: 'rgb(147,197,253)', // Lighter orange for shimmer effect
   claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(51,102,255)', // Bright blue for system spinner
   claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(101,152,255)', // Lighter bright blue for system spinner shimmer
   permission: 'rgb(51,102,255)', // Bright blue
@@ -402,7 +402,7 @@ const lightDaltonizedTheme: Theme = {
   // Chrome colors
   chromeYellow: 'rgb(251,188,4)', // Chrome yellow
   // TUI V2 colors
-  clawd_body: 'rgb(215,119,87)',
+  clawd_body: 'rgb(96,165,250)',
   clawd_background: 'rgb(0,0,0)',
   userMessageBackground: 'rgb(220, 220, 220)', // Slightly darker grey for optimal contrast
   userMessageBackgroundHover: 'rgb(232, 232, 232)', // ≥230 to quantize distinct from base at 256-color level
@@ -416,7 +416,7 @@ const lightDaltonizedTheme: Theme = {
   fastMode: 'rgb(255,106,0)', // Electric orange (color-blind safe)
   fastModeShimmer: 'rgb(255,150,50)', // Lighter orange for shimmer
   briefLabelYou: 'rgb(37,99,235)', // Blue
-  briefLabelClaude: 'rgb(255,153,51)', // Orange adjusted for deuteranopia (matches claude)
+  briefLabelClaude: 'rgb(96,165,250)', // Orange adjusted for deuteranopia (matches claude)
   rainbow_red: 'rgb(235,95,87)',
   rainbow_orange: 'rgb(245,139,87)',
   rainbow_yellow: 'rgb(250,195,95)',
@@ -434,91 +434,84 @@ const lightDaltonizedTheme: Theme = {
 }
 
 /**
- * Ocean Deep Blue theme — 海洋深蓝
- * 深蓝基调，天际蓝品牌色，沉稳专业的视觉体验
+ * Dark theme using explicit RGB values to avoid inconsistencies
+ * from users' custom terminal ANSI color definitions
  */
 const darkTheme: Theme = {
-  // 品牌色
-  claude: 'rgb(56,189,248)', // 天际蓝 #38bdf8
-  claudeShimmer: 'rgb(120,210,255)', // 浅天际蓝
-  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(56,189,248)', // 天际蓝
-  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(120,210,255)', // 浅天际蓝
-  // 权限与规划
-  autoAccept: 'rgb(99,179,237)', // 海洋蓝
-  permission: 'rgb(147,197,253)', // 浅靛蓝
-  permissionShimmer: 'rgb(191,219,254)', // 更浅靛蓝
-  planMode: 'rgb(34,211,238)', // 青色
-  ide: 'rgb(96,165,250)', // 中蓝
-  suggestion: 'rgb(147,197,253)', // 浅靛蓝
-  remember: 'rgb(250,204,21)', // 金黄色
-  // 文本与边框
-  text: 'rgb(226,232,240)', // 蓝白 (Slate 200)
-  inverseText: 'rgb(15,23,42)', // 深海蓝 (Slate 900)
-  inactive: 'rgb(100,116,139)', // 蓝灰 (Slate 500)
-  inactiveShimmer: 'rgb(148,163,184)', // 浅蓝灰 (Slate 400)
-  subtle: 'rgb(71,85,105)', // 暗蓝灰 (Slate 600)
-  promptBorder: 'rgb(51,65,85)', // 深蓝灰 (Slate 700)
-  promptBorderShimmer: 'rgb(71,85,105)', // 中蓝灰 (Slate 600)
-  bashBorder: 'rgb(51,65,85)', // 深蓝灰 (Slate 700)
-  // 语义色
-  background: 'rgb(10,20,40)', // 深海黑
-  success: 'rgb(52,211,153)', // 翡翠绿 (Emerald 400)
-  error: 'rgb(248,113,113)', // 珊瑚红 (Red 400)
-  warning: 'rgb(251,191,36)', // 琥珀黄 (Amber 400)
-  warningShimmer: 'rgb(252,211,77)', // 浅琥珀 (Amber 300)
-  merged: 'rgb(167,139,250)', // 薰衣草紫 (Violet 400)
-  // Diff 颜色
-  diffAdded: 'rgb(22,78,56)', // 深翡翠绿
-  diffRemoved: 'rgb(100,30,50)', // 深玫红
-  diffAddedDimmed: 'rgb(20,60,45)', // 更深翡翠绿
-  diffRemovedDimmed: 'rgb(75,25,40)', // 更深玫红
-  diffAddedWord: 'rgb(52,211,153)', // 翡翠绿
-  diffRemovedWord: 'rgb(248,113,113)', // 珊瑚红
-  // 子代理色 (海洋生物色系 — Tailwind 400 级)
-  red_FOR_SUBAGENTS_ONLY: 'rgb(248,113,113)', // 珊瑚红 (Red 400)
-  blue_FOR_SUBAGENTS_ONLY: 'rgb(96,165,250)', // 海水蓝 (Blue 400)
-  green_FOR_SUBAGENTS_ONLY: 'rgb(52,211,153)', // 海藻绿 (Emerald 400)
-  yellow_FOR_SUBAGENTS_ONLY: 'rgb(250,204,21)', // 沙滩金 (Yellow 400)
-  purple_FOR_SUBAGENTS_ONLY: 'rgb(167,139,250)', // 水母紫 (Violet 400)
-  orange_FOR_SUBAGENTS_ONLY: 'rgb(251,146,60)', // 珊瑚橙 (Orange 400)
-  pink_FOR_SUBAGENTS_ONLY: 'rgb(244,114,182)', // 海葵粉 (Pink 400)
-  cyan_FOR_SUBAGENTS_ONLY: 'rgb(34,211,238)', // 浅海青 (Cyan 400)
-  // Grove / Chrome
-  professionalBlue: 'rgb(96,165,250)', // 中蓝
-  chromeYellow: 'rgb(250,204,21)', // 金黄
-  // TUI V2 色彩
-  clawd_body: 'rgb(56,189,248)', // 天际蓝
-  clawd_background: 'rgb(10,20,40)', // 深海黑
-  userMessageBackground: 'rgb(30,41,59)', // 暗板岩蓝 (Slate 800)
-  userMessageBackgroundHover: 'rgb(40,52,72)', // 稍亮板岩蓝
-  messageActionsBackground: 'rgb(28,38,55)', // 冷蓝灰
-  selectionBg: 'rgb(30,64,110)', // 海军蓝
-  bashMessageBackgroundColor: 'rgb(25,35,52)', // 深蓝灰
-  memoryBackgroundColor: 'rgb(22,33,55)', // 深海蓝灰
-  // 进度条与功能色
-  rate_limit_fill: 'rgb(56,189,248)', // 天际蓝
-  rate_limit_empty: 'rgb(30,58,95)', // 深海蓝
-  fastMode: 'rgb(56,189,248)', // 天际蓝
-  fastModeShimmer: 'rgb(120,210,255)', // 浅天际蓝
-  // 标签色
-  briefLabelYou: 'rgb(96,165,250)', // 中蓝
-  briefLabelClaude: 'rgb(56,189,248)', // 天际蓝
-  // 彩虹色 (海洋极光色系)
-  rainbow_red: 'rgb(248,113,113)', // 珊瑚红
-  rainbow_orange: 'rgb(251,146,60)', // 珊瑚橙
-  rainbow_yellow: 'rgb(250,204,21)', // 沙滩金
-  rainbow_green: 'rgb(52,211,153)', // 海藻绿
-  rainbow_blue: 'rgb(56,189,248)', // 天际蓝
-  rainbow_indigo: 'rgb(129,140,248)', // 海洋靛蓝 (Indigo 400)
-  rainbow_violet: 'rgb(167,139,250)', // 水母紫 (Violet 400)
-  // 彩虹微光变体
-  rainbow_red_shimmer: 'rgb(252,165,165)', // 浅珊瑚红 (Red 300)
-  rainbow_orange_shimmer: 'rgb(253,186,116)', // 浅珊瑚橙 (Orange 300)
-  rainbow_yellow_shimmer: 'rgb(252,211,77)', // 浅沙滩金 (Yellow 300)
-  rainbow_green_shimmer: 'rgb(110,231,183)', // 浅海藻绿 (Emerald 300)
-  rainbow_blue_shimmer: 'rgb(120,210,255)', // 浅天际蓝
-  rainbow_indigo_shimmer: 'rgb(165,180,252)', // 浅海洋靛蓝 (Indigo 300)
-  rainbow_violet_shimmer: 'rgb(196,181,253)', // 浅水母紫 (Violet 300)
+  autoAccept: 'rgb(175,135,255)', // Electric violet
+  bashBorder: 'rgb(253,93,177)', // Bright pink
+  claude: 'rgb(96,165,250)', // Claude orange
+  claudeShimmer: 'rgb(147,197,253)', // Lighter claude orange for shimmer effect
+  claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(147,165,255)', // Blue for system spinner
+  claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(177,195,255)', // Lighter blue for system spinner shimmer
+  permission: 'rgb(177,185,249)', // Light blue-purple
+  permissionShimmer: 'rgb(207,215,255)', // Lighter blue-purple for shimmer
+  planMode: 'rgb(72,150,140)', // Muted sage green
+  ide: 'rgb(71,130,200)', // Muted blue
+  promptBorder: 'rgb(136,136,136)', // Medium gray
+  promptBorderShimmer: 'rgb(166,166,166)', // Lighter gray for shimmer
+  text: 'rgb(255,255,255)', // White
+  inverseText: 'rgb(0,0,0)', // Black
+  inactive: 'rgb(153,153,153)', // Light gray
+  inactiveShimmer: 'rgb(193,193,193)', // Lighter gray for shimmer effect
+  subtle: 'rgb(80,80,80)', // Dark gray
+  suggestion: 'rgb(177,185,249)', // Light blue-purple
+  remember: 'rgb(177,185,249)', // Light blue-purple
+  background: 'rgb(0,204,204)', // Bright cyan
+  success: 'rgb(78,186,101)', // Bright green
+  error: 'rgb(255,107,128)', // Bright red
+  warning: 'rgb(255,193,7)', // Bright amber
+  merged: 'rgb(175,135,255)', // Electric violet (matches autoAccept)
+  warningShimmer: 'rgb(255,223,57)', // Lighter amber for shimmer
+  diffAdded: 'rgb(34,92,43)', // Dark green
+  diffRemoved: 'rgb(122,41,54)', // Dark red
+  diffAddedDimmed: 'rgb(71,88,74)', // Very dark green
+  diffRemovedDimmed: 'rgb(105,72,77)', // Very dark red
+  diffAddedWord: 'rgb(56,166,96)', // Medium green
+  diffRemovedWord: 'rgb(179,89,107)', // Softer red (less intense than bright red)
+  // Agent colors
+  red_FOR_SUBAGENTS_ONLY: 'rgb(220,38,38)', // Red 600
+  blue_FOR_SUBAGENTS_ONLY: 'rgb(37,99,235)', // Blue 600
+  green_FOR_SUBAGENTS_ONLY: 'rgb(22,163,74)', // Green 600
+  yellow_FOR_SUBAGENTS_ONLY: 'rgb(202,138,4)', // Yellow 600
+  purple_FOR_SUBAGENTS_ONLY: 'rgb(147,51,234)', // Purple 600
+  orange_FOR_SUBAGENTS_ONLY: 'rgb(234,88,12)', // Orange 600
+  pink_FOR_SUBAGENTS_ONLY: 'rgb(219,39,119)', // Pink 600
+  cyan_FOR_SUBAGENTS_ONLY: 'rgb(8,145,178)', // Cyan 600
+  // Grove colors
+  professionalBlue: 'rgb(106,155,204)',
+  // Chrome colors
+  chromeYellow: 'rgb(251,188,4)', // Chrome yellow
+  // TUI V2 colors
+  clawd_body: 'rgb(96,165,250)',
+  clawd_background: 'rgb(0,0,0)',
+  userMessageBackground: 'rgb(55, 55, 55)', // Lighter grey for better visual contrast
+  userMessageBackgroundHover: 'rgb(70, 70, 70)',
+  messageActionsBackground: 'rgb(44, 50, 62)', // cool gray, slight blue
+  selectionBg: 'rgb(38, 79, 120)', // classic dark-mode selection blue (VS Code dark default); light fgs stay readable
+  bashMessageBackgroundColor: 'rgb(65, 60, 65)',
+
+  memoryBackgroundColor: 'rgb(55, 65, 70)',
+  rate_limit_fill: 'rgb(177,185,249)', // Light blue-purple
+  rate_limit_empty: 'rgb(80,83,112)', // Medium blue-purple
+  fastMode: 'rgb(255,120,20)', // Electric orange for dark bg
+  fastModeShimmer: 'rgb(255,165,70)', // Lighter orange for shimmer
+  briefLabelYou: 'rgb(122,180,232)', // Light blue
+  briefLabelClaude: 'rgb(96,165,250)', // Brand orange
+  rainbow_red: 'rgb(235,95,87)',
+  rainbow_orange: 'rgb(245,139,87)',
+  rainbow_yellow: 'rgb(250,195,95)',
+  rainbow_green: 'rgb(145,200,130)',
+  rainbow_blue: 'rgb(130,170,220)',
+  rainbow_indigo: 'rgb(155,130,200)',
+  rainbow_violet: 'rgb(200,130,180)',
+  rainbow_red_shimmer: 'rgb(250,155,147)',
+  rainbow_orange_shimmer: 'rgb(255,185,137)',
+  rainbow_yellow_shimmer: 'rgb(255,225,155)',
+  rainbow_green_shimmer: 'rgb(185,230,180)',
+  rainbow_blue_shimmer: 'rgb(180,205,240)',
+  rainbow_indigo_shimmer: 'rgb(195,180,230)',
+  rainbow_violet_shimmer: 'rgb(230,180,210)',
 }
 
 /**
@@ -528,8 +521,8 @@ const darkTheme: Theme = {
 const darkDaltonizedTheme: Theme = {
   autoAccept: 'rgb(175,135,255)', // Electric violet
   bashBorder: 'rgb(51,153,255)', // Bright blue
-  claude: 'rgb(255,153,51)', // Orange adjusted for deuteranopia
-  claudeShimmer: 'rgb(255,183,101)', // Lighter orange for shimmer effect
+  claude: 'rgb(96,165,250)', // Orange adjusted for deuteranopia
+  claudeShimmer: 'rgb(147,197,253)', // Lighter orange for shimmer effect
   claudeBlue_FOR_SYSTEM_SPINNER: 'rgb(153,204,255)', // Light blue for system spinner
   claudeBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(183,224,255)', // Lighter blue for system spinner shimmer
   permission: 'rgb(153,204,255)', // Light blue
@@ -571,7 +564,7 @@ const darkDaltonizedTheme: Theme = {
   // Chrome colors
   chromeYellow: 'rgb(251,188,4)', // Chrome yellow
   // TUI V2 colors
-  clawd_body: 'rgb(215,119,87)',
+  clawd_body: 'rgb(96,165,250)',
   clawd_background: 'rgb(0,0,0)',
   userMessageBackground: 'rgb(55, 55, 55)', // Lighter grey for better visual contrast
   userMessageBackgroundHover: 'rgb(70, 70, 70)',
@@ -585,7 +578,7 @@ const darkDaltonizedTheme: Theme = {
   fastMode: 'rgb(255,120,20)', // Electric orange for dark bg (color-blind safe)
   fastModeShimmer: 'rgb(255,165,70)', // Lighter orange for shimmer
   briefLabelYou: 'rgb(122,180,232)', // Light blue
-  briefLabelClaude: 'rgb(255,153,51)', // Orange adjusted for deuteranopia (matches claude)
+  briefLabelClaude: 'rgb(96,165,250)', // Orange adjusted for deuteranopia (matches claude)
   rainbow_red: 'rgb(235,95,87)',
   rainbow_orange: 'rgb(245,139,87)',
   rainbow_yellow: 'rgb(250,195,95)',

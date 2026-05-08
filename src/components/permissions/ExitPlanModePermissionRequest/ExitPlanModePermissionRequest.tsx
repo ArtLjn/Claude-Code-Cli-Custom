@@ -730,7 +730,7 @@ export function buildPlanApprovalOptions({
   });
   if (showUltraplan) {
     options.push({
-      label: 'No, refine with Ultraplan on OCean Cli on the web',
+      label: 'No, refine with Ultraplan on Ocean CLI on the web',
       value: 'ultraplan'
     });
   }

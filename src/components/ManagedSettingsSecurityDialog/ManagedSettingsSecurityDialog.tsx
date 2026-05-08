@@ -96,7 +96,7 @@ export function ManagedSettingsSecurityDialog(t0) {
       label: "Yes, I trust these settings",
       value: "accept"
     }, {
-      label: "No, exit OCean Cli",
+      label: "No, exit Ocean CLI",
       value: "exit"
     }];
     $[11] = t15;

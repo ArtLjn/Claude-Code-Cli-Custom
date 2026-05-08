@@ -135,7 +135,7 @@ export function ChannelsNotice() {
   }
   let t2;
   if ($[24] !== flag) {
-    t2 = <Text dimColor={true}>Experimental · inbound messages will be pushed into this session, this carries prompt injection risks. Restart OCean Cli without {flag} to disable.</Text>;
+    t2 = <Text dimColor={true}>Experimental · inbound messages will be pushed into this session, this carries prompt injection risks. Restart Ocean CLI without {flag} to disable.</Text>;
     $[24] = flag;
     $[25] = t2;
   } else {
@@ -193,7 +193,7 @@ function _temp() {
     noAuth: false, // Ocean CLI: 跳过 OAuth 检查
     policyBlocked: false, // Ocean CLI: 跳过组织策略检查
     list: l,
-    unmatched: [] // Ocean CLI: 跳过白名单匹配检查
+    unmatched: findUnmatched(ch, allowlist)
   };
 }
 function formatEntry(c: ChannelEntry): string {

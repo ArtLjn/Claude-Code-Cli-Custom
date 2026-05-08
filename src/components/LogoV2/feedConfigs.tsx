@@ -39,7 +39,7 @@ export function createWhatsNewFeed(releaseNotes: string[]): FeedConfig {
       text: note
     };
   });
-  const emptyMessage = "external" === 'ant' ? 'Unable to fetch latest claude-cli-internal commits' : 'Check the OCean Cli changelog for updates';
+  const emptyMessage = "external" === 'ant' ? 'Unable to fetch latest claude-cli-internal commits' : 'Check the Ocean CLI changelog for updates';
   return {
     title: "external" === 'ant' ? "What's new [ANT-ONLY: Latest CC commits]" : "What's new",
     lines,
@@ -73,7 +73,7 @@ export function createProjectOnboardingFeed(steps: Step[]): FeedConfig {
 }
 export function createGuestPassesFeed(): FeedConfig {
   const reward = getCachedReferrerReward();
-  const subtitle = reward ? `Share OCean Cli and earn ${formatCreditAmount(reward)} of extra usage` : 'Share OCean Cli with friends';
+  const subtitle = reward ? `Share Ocean CLI and earn ${formatCreditAmount(reward)} of extra usage` : 'Share Ocean CLI with friends';
   return {
     title: '3 guest passes',
     lines: [],

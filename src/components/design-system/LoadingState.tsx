@@ -42,7 +42,7 @@ type LoadingStateProps = {
  * <LoadingState
  *   message="Loading sessions"
  *   bold
- *   subtitle="Fetching your OCean Cli sessions..."
+ *   subtitle="Fetching your Ocean CLI sessions..."
  * />
  */
 export function LoadingState(t0) {

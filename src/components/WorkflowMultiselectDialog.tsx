@@ -18,10 +18,10 @@ type Props = {
 };
 const WORKFLOWS: WorkflowOption[] = [{
   value: 'claude' as const,
-  label: '@OCean Cli - Tag @claude in issues and PR comments'
+  label: '@Ocean CLI - Tag @claude in issues and PR comments'
 }, {
   value: 'claude-review' as const,
-  label: 'OCean Cli Review - Automated code review on new PRs'
+  label: 'Ocean CLI Review - Automated code review on new PRs'
 }];
 function renderInputGuide(exitState: ExitState): React.ReactNode {
   if (exitState.pending) {

@@ -119,17 +119,17 @@ export function ResumeTask({
     return <Box flexDirection="column" padding={1}>
         <Box flexDirection="row">
           <Spinner />
-          <Text bold>Loading OCean Cli sessions…</Text>
+          <Text bold>Loading Ocean CLI sessions…</Text>
         </Box>
         <Text dimColor>
-          {retrying ? 'Retrying…' : 'Fetching your OCean Cli sessions…'}
+          {retrying ? 'Retrying…' : 'Fetching your Ocean CLI sessions…'}
         </Text>
       </Box>;
   }
   if (loadErrorType) {
     return <Box flexDirection="column" padding={1}>
         <Text bold color="error">
-          Error loading OCean Cli sessions
+          Error loading Ocean CLI sessions
         </Text>
 
         {renderErrorSpecificGuidance(loadErrorType)}
@@ -143,7 +143,7 @@ export function ResumeTask({
   if (sessions.length === 0) {
     return <Box flexDirection="column" padding={1}>
         <Text bold>
-          No OCean Cli sessions found
+          No Ocean CLI sessions found
           {currentRepo && <Text> for {currentRepo}</Text>}
         </Text>
         <Box marginTop={1}>
@@ -261,7 +261,7 @@ function renderErrorSpecificGuidance(errorType: LoadErrorType): React.ReactNode 
         </Box>;
     case 'other':
       return <Box marginY={1} flexDirection="row">
-          <Text dimColor>Sorry, OCean Cli encountered an error</Text>
+          <Text dimColor>Sorry, Ocean CLI encountered an error</Text>
         </Box>;
   }
 }
