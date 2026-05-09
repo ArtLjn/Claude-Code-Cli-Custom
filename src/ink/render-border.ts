@@ -43,7 +43,43 @@ function embedTextInBorder(
   const borderLength = borderLine.length
 
   if (textLength >= borderLength - 2) {
-    return ['', text.substring(0, borderLength), '']
+    // Text too long for the border line: preserve corner characters and
+    // truncate text to fit between them. This prevents the border from
+    // completely disappearing when the title is wider than the box.
+    // ANSI-aware truncation: strip ANSI, truncate visible chars, then
+    // re-apply styles to the truncated portion to avoid broken escape codes.
+    const maxTextWidth = Math.max(0, borderLength - 2)
+    const cornerLeft = borderLine.substring(0, 1)
+    const cornerRight = borderLine.substring(borderLength - 1)
+    if (maxTextWidth === 0) {
+      return [cornerLeft, '', cornerRight]
+    }
+    // Truncate text to maxTextWidth visible characters (ANSI-safe)
+    let truncated = ''
+    let visibleWidth = 0
+    let inEscape = false
+    for (let i = 0; i < text.length && visibleWidth < maxTextWidth; i++) {
+      const ch = text[i]!
+      if (ch === '\x1b') {
+        inEscape = true
+        truncated += ch
+        continue
+      }
+      if (inEscape) {
+        truncated += ch
+        if (ch === 'm' || ch === 'G' || ch === 'H') {
+          inEscape = false
+        }
+        continue
+      }
+      truncated += ch
+      visibleWidth++
+    }
+    // Close any unclosed ANSI sequence
+    if (inEscape) {
+      truncated += 'm'
+    }
+    return [cornerLeft, truncated, cornerRight]
   }
 
   let position: number
@@ -88,12 +124,18 @@ const renderBorder = (
   if (node.style.borderStyle) {
     const width = Math.floor(node.yogaNode!.getComputedWidth())
     const height = Math.floor(node.yogaNode!.getComputedHeight())
-    const box =
+    let box =
       typeof node.style.borderStyle === 'string'
         ? (CUSTOM_BORDER_STYLES[
             node.style.borderStyle as keyof typeof CUSTOM_BORDER_STYLES
           ] ?? cliBoxes[node.style.borderStyle as keyof Boxes])
         : node.style.borderStyle
+
+    // Guard: if border style lookup failed (unknown style name or missing import),
+    // fall back to 'round' to prevent silent rendering failure (border disappears)
+    if (!box) {
+      box = cliBoxes.round
+    }
 
     const topBorderColor = node.style.borderTopColor ?? node.style.borderColor
     const bottomBorderColor =

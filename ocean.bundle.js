@@ -135591,7 +135591,36 @@ function embedTextInBorder(borderLine, text, align, offset = 0, borderChar) {
   const textLength = stringWidth(text);
   const borderLength = borderLine.length;
   if (textLength >= borderLength - 2) {
-    return ["", text.substring(0, borderLength), ""];
+    const maxTextWidth = Math.max(0, borderLength - 2);
+    const cornerLeft = borderLine.substring(0, 1);
+    const cornerRight = borderLine.substring(borderLength - 1);
+    if (maxTextWidth === 0) {
+      return [cornerLeft, "", cornerRight];
+    }
+    let truncated = "";
+    let visibleWidth = 0;
+    let inEscape = false;
+    for (let i3 = 0;i3 < text.length && visibleWidth < maxTextWidth; i3++) {
+      const ch = text[i3];
+      if (ch === "\x1B") {
+        inEscape = true;
+        truncated += ch;
+        continue;
+      }
+      if (inEscape) {
+        truncated += ch;
+        if (ch === "m" || ch === "G" || ch === "H") {
+          inEscape = false;
+        }
+        continue;
+      }
+      truncated += ch;
+      visibleWidth++;
+    }
+    if (inEscape) {
+      truncated += "m";
+    }
+    return [cornerLeft, truncated, cornerRight];
   }
   let position2;
   if (align === "center") {
@@ -135617,7 +135646,10 @@ var CUSTOM_BORDER_STYLES, renderBorder = (x2, y2, node, output) => {
   if (node.style.borderStyle) {
     const width = Math.floor(node.yogaNode.getComputedWidth());
     const height = Math.floor(node.yogaNode.getComputedHeight());
-    const box = typeof node.style.borderStyle === "string" ? CUSTOM_BORDER_STYLES[node.style.borderStyle] ?? cli_boxes_default[node.style.borderStyle] : node.style.borderStyle;
+    let box = typeof node.style.borderStyle === "string" ? CUSTOM_BORDER_STYLES[node.style.borderStyle] ?? cli_boxes_default[node.style.borderStyle] : node.style.borderStyle;
+    if (!box) {
+      box = cli_boxes_default.round;
+    }
     const topBorderColor = node.style.borderTopColor ?? node.style.borderColor;
     const bottomBorderColor = node.style.borderBottomColor ?? node.style.borderColor;
     const leftBorderColor = node.style.borderLeftColor ?? node.style.borderColor;
