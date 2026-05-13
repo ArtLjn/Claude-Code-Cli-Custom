@@ -1,0 +1,24 @@
+#!/bin/bash
+# post-checkout: 切换分支后自动清理 __pycache__
+
+PREV_HEAD=$1
+NEW_HEAD=$2
+BRANCH_CHECKOUT=$3
+
+[ "$BRANCH_CHECKOUT" != "1" ] && exit 0
+[ "$PREV_HEAD" = "$NEW_HEAD" ] && exit 0
+
+CLEANED=0
+
+find . -type d -name "__pycache__" 2>/dev/null | while read -r dir; do
+    rm -rf "$dir"
+    CLEANED=1
+done
+
+find . -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete 2>/dev/null && CLEANED=1
+
+if [ "$CLEANED" -eq 1 ]; then
+    echo "[post-checkout] 已清理 Python 缓存文件"
+fi
+
+exit 0
