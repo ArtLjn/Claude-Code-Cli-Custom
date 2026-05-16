@@ -9,6 +9,7 @@ export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS facts (
   fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
   content         TEXT NOT NULL UNIQUE,
+  summary         TEXT DEFAULT NULL,
   category        TEXT DEFAULT 'general',
   tags            TEXT DEFAULT '',
   keywords        TEXT DEFAULT '[]',

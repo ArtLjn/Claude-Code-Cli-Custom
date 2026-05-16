@@ -25,6 +25,7 @@ export const TECH_MATCH_CATEGORIES = new Set<FactCategory>(['coding_style'])
 export interface Fact {
   factId: number
   content: string
+  summary: string | null
   category: FactCategory
   tags: string
   keywords: string
