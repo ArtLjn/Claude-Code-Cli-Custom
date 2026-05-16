@@ -14,6 +14,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { SCHEMA } from './schema'
 import type { Fact, FactCategory } from '../types'
+import { generateSummary } from '../summarizer.js'
 
 // 信任评分常量
 const HELPFUL_DELTA = 0.05
@@ -59,6 +60,7 @@ function clampTrust(value: number): number {
 interface FactRow {
   fact_id: number
   content: string
+  summary: string | null
   category: string
   tags: string
   keywords: string
@@ -126,7 +128,7 @@ export class MemoryStore {
 
   private prepareStatements(): void {
     this.stmtInsertFact = this.db.prepare(
-      'INSERT INTO facts (content, category, tags, keywords, trust_score) VALUES (?, ?, ?, ?, ?)'
+      'INSERT INTO facts (content, summary, category, tags, keywords, trust_score) VALUES (?, ?, ?, ?, ?, ?)'
     )
     this.stmtFindFactByContent = this.db.prepare(
       'SELECT fact_id FROM facts WHERE content = ?'
@@ -162,6 +164,8 @@ export class MemoryStore {
     const trimmed = content.trim()
     if (!trimmed) throw new Error('content must not be empty')
 
+    const summary = generateSummary(trimmed)
+
     // 将中文 bigram 追加到 tags，让 FTS5 能索引中文词组
     const enhancedTags = this.enhanceTagsForChinese(trimmed, tags)
     // 提取主题关键词
@@ -169,7 +173,7 @@ export class MemoryStore {
 
     const insertFacts = this.db.transaction(() => {
       try {
-        const info = this.stmtInsertFact.run(trimmed, category, enhancedTags, keywords, this.defaultTrust)
+        const info = this.stmtInsertFact.run(trimmed, summary, category, enhancedTags, keywords, this.defaultTrust)
         const factId = Number(info.lastInsertRowid)
 
         // 实体提取和关联（只从内容中提取，不从 tags 提取）
@@ -317,6 +321,11 @@ export class MemoryStore {
     if (updates.content !== undefined) {
       assignments.push('content = ?')
       params.push(updates.content.trim())
+
+      // Regenerate summary
+      const newSummary = generateSummary(updates.content.trim())
+      assignments.push('summary = ?')
+      params.push(newSummary)
     }
     if (updates.tags !== undefined) {
       assignments.push('tags = ?')
@@ -968,6 +977,7 @@ export class MemoryStore {
     return {
       factId: row.fact_id,
       content: row.content,
+      summary: row.summary ?? null,
       category: row.category as FactCategory,
       tags: row.tags,
       keywords: row.keywords,
