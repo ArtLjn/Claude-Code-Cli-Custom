@@ -111,6 +111,16 @@ export class HolographicProvider extends MemoryProvider {
   /** 从项目根目录提取的项目标识，用于内容级路由判断 */
   private projectIdSignals: string[] = []
 
+  // Tiered injection state
+  private cachedBlock: string | null = null
+  private lastBuildTime: string = ''
+  private lastFactCount: number = -1
+  private warmSummary: string = ''
+  private warmRoundCounter: number = 0
+  private readonly WARM_TTL = 5
+  private readonly HOT_TIER_LIMIT = 5
+  private readonly HOT_TIER_MIN_TRUST = 0.5
+
   get name(): string {
     return 'holographic'
   }
@@ -361,10 +371,56 @@ export class HolographicProvider extends MemoryProvider {
   }
 
   // ------------------------------------------------------------------
+  // Tiered injection helpers
+  // ------------------------------------------------------------------
+
+  private getFactDisplayText(fact: { summary: string | null; content: string }): string {
+    return fact.summary ?? fact.content
+  }
+
+  private hasFactDatabaseChanged(): boolean {
+    if (!this.globalStore) return true
+    const maxUpdated = this.globalStore.connection.prepare(
+      "SELECT MAX(updated_at) as max_time, COUNT(*) as count FROM facts"
+    ).get() as { max_time: string; count: number }
+    return maxUpdated.max_time !== this.lastBuildTime || maxUpdated.count !== this.lastFactCount
+  }
+
+  private generateWarmSummary(): string {
+    const parts: string[] = []
+
+    const workflowFacts = this.globalStore?.listFacts('workflow', 0.0, 10) ?? []
+    if (workflowFacts.length > 0) {
+      const workflowTexts = workflowFacts.map(f => this.getFactDisplayText(f))
+      parts.push('工作流偏好：' + workflowTexts.join('；') + '。')
+    }
+
+    const codingFacts = this.globalStore?.listFacts('coding_style', 0.0, 20) ?? []
+    if (codingFacts.length > 0) {
+      const techTag = this.detectProjectTech()
+      const matched = techTag
+        ? codingFacts.filter(f => f.content.toLowerCase().includes(techTag) || f.tags.toLowerCase().includes(techTag))
+        : codingFacts.slice(0, 3)
+
+      if (matched.length > 0) {
+        const codingTexts = matched.slice(0, 3).map(f => this.getFactDisplayText(f))
+        parts.push(`编码习惯${techTag ? '（' + techTag + '）' : ''}：` + codingTexts.join('；') + '。')
+      }
+    }
+
+    return parts.join('\n')
+  }
+
+  // ------------------------------------------------------------------
   // System prompt 注入
   // ------------------------------------------------------------------
 
   systemPromptBlock(): string {
+    // 1. 缓存命中检查：数据库未变更时直接返回缓存
+    if (this.cachedBlock && !this.hasFactDatabaseChanged()) {
+      return this.cachedBlock
+    }
+
     const globalCount = this.globalStore?.getTotalCount() ?? 0
     const projectCount = this.projectStore?.getTotalCount() ?? 0
 
@@ -385,38 +441,30 @@ export class HolographicProvider extends MemoryProvider {
     block += '\n  → update 为"用 pnpm 管理依赖，偏好 monorepo 结构"，只改包管理器，不丢其他信息。'
     block += '\n**反馈**：成功使用 fact_store 返回的事实时，调用 fact_feedback(action="helpful", fact_id=...) 正向强化该事实的信任评分。'
 
-    // 层 1：identity 始终注入（包含 AI 角色设定和用户信息）
-    const identityFacts = this.globalStore?.listFacts('identity', 0.0, 20) ?? []
+    // Hot tier：高信任 identity 事实（仅 top N）
+    const identityFacts = this.globalStore?.listFacts('identity', this.HOT_TIER_MIN_TRUST, this.HOT_TIER_LIMIT) ?? []
     if (identityFacts.length > 0) {
       block += '\n\n## 角色与身份设定（必须遵守）\n'
-      block += identityFacts.map(f => `- ${f.content}`).join('\n')
+      block += identityFacts.map(f => `- ${this.getFactDisplayText(f)}`).join('\n')
       block += '\n\n当用户问"你是谁"时，必须按照以上设定回答，不要自称"Ocean CLI"或其他默认身份。'
     }
 
-    // 层 2：workflow 始终注入
-    const workflowFacts = this.globalStore?.listFacts('workflow', 0.0, 10) ?? []
-    if (workflowFacts.length > 0) {
-      block += '\n\n## 工作流偏好\n'
-      block += workflowFacts.map(f => `- ${f.content}`).join('\n')
+    // Warm tier：工作流 + 编码习惯摘要，缓存 5 轮
+    if (this.warmRoundCounter >= this.WARM_TTL || !this.warmSummary) {
+      this.warmSummary = this.generateWarmSummary()
+      this.warmRoundCounter = 0
+    } else {
+      this.warmRoundCounter++
+    }
+    if (this.warmSummary) {
+      block += '\n\n## 工作流与编码习惯\n'
+      block += this.warmSummary
     }
 
-    // 层 3：coding_style 按项目技术栈匹配注入
-    const codingFacts = this.globalStore?.listFacts('coding_style', 0.0, 20) ?? []
-    if (codingFacts.length > 0) {
-      const techTag = this.detectProjectTech()
-      if (techTag) {
-        const matched = codingFacts.filter(f =>
-          f.content.toLowerCase().includes(techTag)
-          || f.tags.toLowerCase().includes(techTag)
-        )
-        if (matched.length > 0) {
-          block += `\n\n## 编码习惯（${techTag}）\n`
-          block += matched.map(f => `- ${f.content}`).join('\n')
-        }
-      }
-    }
+    // Cold tier：general / tool_pref / project（除概览外）不再自动注入
+    // 这些类别通过 prefetch 按需检索
 
-    // 层 4：项目概览（一条事实，始终注入）
+    // 项目概览（一条事实，始终注入）
     const overview = this.getProjectOverview()
     if (overview) {
       block += '\n\n## 项目概览\n'
@@ -433,6 +481,16 @@ export class HolographicProvider extends MemoryProvider {
     } else if (this.overviewNeedsUpdate) {
       block += '\n\n> 注意：项目文档有变更，概览可能需要更新。请根据需要更新概览内容。'
     }
+
+    // 更新缓存
+    const maxUpdated = this.globalStore?.connection.prepare(
+      "SELECT MAX(updated_at) as max_time, COUNT(*) as count FROM facts"
+    ).get() as { max_time: string; count: number } | undefined
+    if (maxUpdated) {
+      this.lastBuildTime = maxUpdated.max_time
+      this.lastFactCount = maxUpdated.count
+    }
+    this.cachedBlock = block
 
     return block
   }
