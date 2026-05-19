@@ -111,6 +111,10 @@ export class MemoryStore {
 
   /** 增量迁移：添加新列（已存在则跳过） */
   private migrateSchema(): void {
+    // summary 列（v3）
+    try {
+      this.db.exec('ALTER TABLE facts ADD COLUMN summary TEXT DEFAULT NULL')
+    } catch { /* 列已存在 */ }
     // keywords 列（v2）
     try {
       this.db.exec('ALTER TABLE facts ADD COLUMN keywords TEXT DEFAULT \'[]\'')
@@ -380,7 +384,7 @@ export class MemoryStore {
     params.push(limit)
 
     const sql = `
-      SELECT fact_id, content, category, tags, keywords, trust_score,
+      SELECT fact_id, content, summary, category, tags, keywords, trust_score,
              retrieval_count, helpful_count, created_at, updated_at
       FROM facts
       WHERE trust_score >= ?

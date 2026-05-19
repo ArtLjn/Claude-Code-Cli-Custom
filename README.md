@@ -258,6 +258,18 @@ ocean --channels server:feishu
 
 ## 快速开始
 
+### npm 安装（推荐）
+
+> **前提**：需要 [Bun](https://bun.sh) >= 1.3.5
+
+```bash
+# 全局安装
+npm install -g @morningljn/ocean
+
+# 或一次性使用
+npx @morningljn/ocean
+```
+
 ### macOS / Linux（一键安装）
 
 ```bash

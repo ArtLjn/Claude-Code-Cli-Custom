@@ -352074,6 +352074,7 @@ var SCHEMA = `
 CREATE TABLE IF NOT EXISTS facts (
   fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
   content         TEXT NOT NULL UNIQUE,
+  summary         TEXT DEFAULT NULL,
   category        TEXT DEFAULT 'general',
   tags            TEXT DEFAULT '',
   keywords        TEXT DEFAULT '[]',
@@ -352148,6 +352149,31 @@ CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
 END;
 `;
 
+// src/memory/summarizer.ts
+function generateSummary(content) {
+  const trimmed = content.trim();
+  if (trimmed.length <= SUMMARY_THRESHOLD)
+    return null;
+  let summary = extractKeySentences(trimmed);
+  const maxLen = Math.min(Math.floor(trimmed.length * MAX_SUMMARY_RATIO), MAX_SUMMARY_LENGTH);
+  if (summary.length > maxLen) {
+    summary = summary.slice(0, maxLen);
+    const lastPeriod = Math.max(summary.lastIndexOf("\u3002"), summary.lastIndexOf(". "));
+    if (lastPeriod > maxLen * 0.6) {
+      summary = summary.slice(0, lastPeriod + 1);
+    }
+  }
+  return summary.trim();
+}
+function extractKeySentences(text2) {
+  const sentences = text2.split(/(?<=[\u3002\uFF01\uFF1F])\s*|\.\s+/).filter((s2) => s2.trim().length > 5);
+  if (sentences.length >= 2) {
+    return sentences.slice(0, 2).join("\u3002") + "\u3002";
+  }
+  return text2.slice(0, Math.floor(text2.length * 0.6));
+}
+var SUMMARY_THRESHOLD = 100, MAX_SUMMARY_RATIO = 0.5, MAX_SUMMARY_LENGTH = 120;
+
 // src/memory/store/MemoryStore.ts
 import { Database } from "bun:sqlite";
 import { mkdirSync as mkdirSync7 } from "fs";
@@ -352183,6 +352209,9 @@ class MemoryStore {
   }
   migrateSchema() {
     try {
+      this.db.exec("ALTER TABLE facts ADD COLUMN summary TEXT DEFAULT NULL");
+    } catch {}
+    try {
       this.db.exec("ALTER TABLE facts ADD COLUMN keywords TEXT DEFAULT '[]'");
     } catch {}
     this.db.exec(`
@@ -352195,7 +352224,7 @@ class MemoryStore {
     `);
   }
   prepareStatements() {
-    this.stmtInsertFact = this.db.prepare("INSERT INTO facts (content, category, tags, keywords, trust_score) VALUES (?, ?, ?, ?, ?)");
+    this.stmtInsertFact = this.db.prepare("INSERT INTO facts (content, summary, category, tags, keywords, trust_score) VALUES (?, ?, ?, ?, ?, ?)");
     this.stmtFindFactByContent = this.db.prepare("SELECT fact_id FROM facts WHERE content = ?");
     this.stmtFindEntityByName = this.db.prepare("SELECT entity_id FROM entities WHERE name = ?");
     this.stmtFindEntityByAlias = this.db.prepare("SELECT entity_id FROM entities WHERE ',' || aliases || ',' LIKE '%,' || ? || ',%'");
@@ -352210,11 +352239,12 @@ class MemoryStore {
     const trimmed = content.trim();
     if (!trimmed)
       throw new Error("content must not be empty");
+    const summary = generateSummary(trimmed);
     const enhancedTags = this.enhanceTagsForChinese(trimmed, tags);
     const keywords = this.extractKeywords(trimmed, category, tags);
     const insertFacts = this.db.transaction(() => {
       try {
-        const info = this.stmtInsertFact.run(trimmed, category, enhancedTags, keywords, this.defaultTrust);
+        const info = this.stmtInsertFact.run(trimmed, summary, category, enhancedTags, keywords, this.defaultTrust);
         const factId = Number(info.lastInsertRowid);
         const entities = this.extractEntities(trimmed);
         for (const name of entities) {
@@ -352323,6 +352353,9 @@ class MemoryStore {
     if (updates.content !== undefined) {
       assignments.push("content = ?");
       params.push(updates.content.trim());
+      const newSummary = generateSummary(updates.content.trim());
+      assignments.push("summary = ?");
+      params.push(newSummary);
     }
     if (updates.tags !== undefined) {
       assignments.push("tags = ?");
@@ -352368,7 +352401,7 @@ class MemoryStore {
     }
     params.push(limit);
     const sql = `
-      SELECT fact_id, content, category, tags, keywords, trust_score,
+      SELECT fact_id, content, summary, category, tags, keywords, trust_score,
              retrieval_count, helpful_count, created_at, updated_at
       FROM facts
       WHERE trust_score >= ?
@@ -352803,6 +352836,7 @@ class MemoryStore {
     return {
       factId: row.fact_id,
       content: row.content,
+      summary: row.summary ?? null,
       category: row.category,
       tags: row.tags,
       keywords: row.keywords,
@@ -353741,6 +353775,14 @@ var init_HolographicProvider = __esm(() => {
     projectRoot = "";
     overviewNeedsUpdate = false;
     projectIdSignals = [];
+    cachedBlock = null;
+    lastBuildTime = "";
+    lastFactCount = -1;
+    warmSummary = "";
+    warmRoundCounter = 0;
+    WARM_TTL = 5;
+    HOT_TIER_LIMIT = 5;
+    HOT_TIER_MIN_TRUST = 0.5;
     get name() {
       return "holographic";
     }
@@ -353905,7 +353947,38 @@ var init_HolographicProvider = __esm(() => {
         }
       }
     }
+    getFactDisplayText(fact) {
+      return fact.summary ?? fact.content;
+    }
+    hasFactDatabaseChanged() {
+      if (!this.globalStore)
+        return true;
+      const maxUpdated = this.globalStore.connection.prepare("SELECT MAX(updated_at) as max_time, COUNT(*) as count FROM facts").get();
+      return maxUpdated.max_time !== this.lastBuildTime || maxUpdated.count !== this.lastFactCount;
+    }
+    generateWarmSummary() {
+      const parts = [];
+      const workflowFacts = this.globalStore?.listFacts("workflow", 0, 10) ?? [];
+      if (workflowFacts.length > 0) {
+        const workflowTexts = workflowFacts.map((f2) => this.getFactDisplayText(f2));
+        parts.push("\u5DE5\u4F5C\u6D41\u504F\u597D\uFF1A" + workflowTexts.join("\uFF1B") + "\u3002");
+      }
+      const codingFacts = this.globalStore?.listFacts("coding_style", 0, 20) ?? [];
+      if (codingFacts.length > 0) {
+        const techTag = this.detectProjectTech();
+        const matched = techTag ? codingFacts.filter((f2) => f2.content.toLowerCase().includes(techTag) || f2.tags.toLowerCase().includes(techTag)) : codingFacts.slice(0, 3);
+        if (matched.length > 0) {
+          const codingTexts = matched.slice(0, 3).map((f2) => this.getFactDisplayText(f2));
+          parts.push(`\u7F16\u7801\u4E60\u60EF${techTag ? "\uFF08" + techTag + "\uFF09" : ""}\uFF1A` + codingTexts.join("\uFF1B") + "\u3002");
+        }
+      }
+      return parts.join(`
+`);
+    }
     systemPromptBlock() {
+      if (this.cachedBlock && !this.hasFactDatabaseChanged()) {
+        return this.cachedBlock;
+      }
       const globalCount = this.globalStore?.getTotalCount() ?? 0;
       const projectCount = this.projectStore?.getTotalCount() ?? 0;
       if (globalCount === 0 && projectCount === 0) {
@@ -353937,41 +354010,30 @@ var init_HolographicProvider = __esm(() => {
   \u2192 update \u4E3A"\u7528 pnpm \u7BA1\u7406\u4F9D\u8D56\uFF0C\u504F\u597D monorepo \u7ED3\u6784"\uFF0C\u53EA\u6539\u5305\u7BA1\u7406\u5668\uFF0C\u4E0D\u4E22\u5176\u4ED6\u4FE1\u606F\u3002`;
       block += `
 **\u53CD\u9988**\uFF1A\u6210\u529F\u4F7F\u7528 fact_store \u8FD4\u56DE\u7684\u4E8B\u5B9E\u65F6\uFF0C\u8C03\u7528 fact_feedback(action="helpful", fact_id=...) \u6B63\u5411\u5F3A\u5316\u8BE5\u4E8B\u5B9E\u7684\u4FE1\u4EFB\u8BC4\u5206\u3002`;
-      const identityFacts = this.globalStore?.listFacts("identity", 0, 20) ?? [];
+      const identityFacts = this.globalStore?.listFacts("identity", this.HOT_TIER_MIN_TRUST, this.HOT_TIER_LIMIT) ?? [];
       if (identityFacts.length > 0) {
         block += `
 
 ## \u89D2\u8272\u4E0E\u8EAB\u4EFD\u8BBE\u5B9A\uFF08\u5FC5\u987B\u9075\u5B88\uFF09
 `;
-        block += identityFacts.map((f2) => `- ${f2.content}`).join(`
+        block += identityFacts.map((f2) => `- ${this.getFactDisplayText(f2)}`).join(`
 `);
         block += `
 
 \u5F53\u7528\u6237\u95EE"\u4F60\u662F\u8C01"\u65F6\uFF0C\u5FC5\u987B\u6309\u7167\u4EE5\u4E0A\u8BBE\u5B9A\u56DE\u7B54\uFF0C\u4E0D\u8981\u81EA\u79F0"Ocean CLI"\u6216\u5176\u4ED6\u9ED8\u8BA4\u8EAB\u4EFD\u3002`;
       }
-      const workflowFacts = this.globalStore?.listFacts("workflow", 0, 10) ?? [];
-      if (workflowFacts.length > 0) {
+      if (this.warmRoundCounter >= this.WARM_TTL || !this.warmSummary) {
+        this.warmSummary = this.generateWarmSummary();
+        this.warmRoundCounter = 0;
+      } else {
+        this.warmRoundCounter++;
+      }
+      if (this.warmSummary) {
         block += `
 
-## \u5DE5\u4F5C\u6D41\u504F\u597D
+## \u5DE5\u4F5C\u6D41\u4E0E\u7F16\u7801\u4E60\u60EF
 `;
-        block += workflowFacts.map((f2) => `- ${f2.content}`).join(`
-`);
-      }
-      const codingFacts = this.globalStore?.listFacts("coding_style", 0, 20) ?? [];
-      if (codingFacts.length > 0) {
-        const techTag = this.detectProjectTech();
-        if (techTag) {
-          const matched = codingFacts.filter((f2) => f2.content.toLowerCase().includes(techTag) || f2.tags.toLowerCase().includes(techTag));
-          if (matched.length > 0) {
-            block += `
-
-## \u7F16\u7801\u4E60\u60EF\uFF08${techTag}\uFF09
-`;
-            block += matched.map((f2) => `- ${f2.content}`).join(`
-`);
-          }
-        }
+        block += this.warmSummary;
       }
       const overview = this.getProjectOverview();
       if (overview) {
@@ -353997,6 +354059,12 @@ fact_store(action="add", content="\u9879\u76EE\u6982\u89C8\u5185\u5BB9", categor
 
 > \u6CE8\u610F\uFF1A\u9879\u76EE\u6587\u6863\u6709\u53D8\u66F4\uFF0C\u6982\u89C8\u53EF\u80FD\u9700\u8981\u66F4\u65B0\u3002\u8BF7\u6839\u636E\u9700\u8981\u66F4\u65B0\u6982\u89C8\u5185\u5BB9\u3002`;
       }
+      const maxUpdated = this.globalStore?.connection.prepare("SELECT MAX(updated_at) as max_time, COUNT(*) as count FROM facts").get();
+      if (maxUpdated) {
+        this.lastBuildTime = maxUpdated.max_time;
+        this.lastFactCount = maxUpdated.count;
+      }
+      this.cachedBlock = block;
       return block;
     }
     prefetch(query2) {
@@ -563950,9 +564018,8 @@ var init_cli2 = __esm(() => {
 });
 // package.json
 var package_default = {
-  name: "ocean-cli",
+  name: "@morningljn/ocean",
   version: "1.0.0",
-  private: true,
   description: "Enhanced Claude Code CLI \u2014 multi-model switching, structured memory, multi-agent collaboration & skill system",
   keywords: [
     "ai",
@@ -563973,99 +564040,33 @@ var package_default = {
     "glm",
     "doubao"
   ],
-  license: "SEE LICENSE IN LICENSE.md",
+  license: "MIT",
   type: "module",
-  packageManager: "bun@1.3.5",
+  bin: {
+    ocean: "./bin/ocean.js"
+  },
+  files: [
+    "bin/",
+    "ocean.bundle.js",
+    "LICENSE",
+    "README.md"
+  ],
   repository: {
     type: "git",
-    url: "https://github.com/anthropics/claude-code.git"
+    url: "https://github.com/ArtLjn/ocean-cc-cli.git"
   },
   engines: {
-    bun: ">=1.3.5",
-    node: ">=24.0.0"
+    bun: ">=1.3.5"
   },
   scripts: {
     dev: "bun run ./src/dev-entry.ts",
     start: "bun run ./src/dev-entry.ts",
     build: "bash build.sh",
+    prepublishOnly: "bash build.sh",
     version: "bun run ./src/dev-entry.ts --version"
   },
-  dependencies: {
-    "@alcalzone/ansi-tokenize": "*",
-    "@ant/claude-for-chrome-mcp": "file:./shims/ant-claude-for-chrome-mcp",
-    "@ant/computer-use-input": "file:./shims/ant-computer-use-input",
-    "@ant/computer-use-mcp": "file:./shims/ant-computer-use-mcp",
-    "@ant/computer-use-swift": "file:./shims/ant-computer-use-swift",
-    "@anthropic-ai/claude-agent-sdk": "*",
-    "@anthropic-ai/mcpb": "*",
-    "@anthropic-ai/sandbox-runtime": "*",
-    "@anthropic-ai/sdk": "*",
-    "@aws-sdk/client-bedrock-runtime": "*",
-    "@commander-js/extra-typings": "*",
-    "@growthbook/growthbook": "*",
-    "@modelcontextprotocol/sdk": "*",
-    "@opentelemetry/api": "*",
-    "@opentelemetry/api-logs": "*",
-    "@opentelemetry/core": "*",
-    "@opentelemetry/resources": "*",
-    "@opentelemetry/sdk-logs": "*",
-    "@opentelemetry/sdk-metrics": "*",
-    "@opentelemetry/sdk-trace-base": "*",
-    "@opentelemetry/semantic-conventions": "*",
-    ajv: "*",
-    asciichart: "*",
-    "auto-bind": "*",
-    axios: "*",
-    "bidi-js": "*",
-    chalk: "*",
-    chokidar: "*",
-    "cli-boxes": "*",
-    "code-excerpt": "*",
-    diff: "*",
-    "emoji-regex": "*",
-    "env-paths": "*",
-    execa: "*",
-    figures: "*",
-    "fuse.js": "*",
-    "get-east-asian-width": "*",
-    "google-auth-library": "*",
-    "highlight.js": "*",
-    "https-proxy-agent": "*",
-    ignore: "*",
-    "indent-string": "*",
-    ink: "*",
-    "jsonc-parser": "*",
-    "lodash-es": "*",
-    "lru-cache": "*",
-    marked: "*",
-    "p-map": "*",
-    picomatch: "*",
-    "proper-lockfile": "*",
-    qrcode: "*",
-    react: "*",
-    "react-reconciler": "*",
-    semver: "*",
-    "shell-quote": "*",
-    "signal-exit": "*",
-    "stack-utils": "*",
-    "strip-ansi": "*",
-    "supports-hyperlinks": "*",
-    "tree-kill": "*",
-    "type-fest": "*",
-    undici: "*",
-    "usehooks-ts": "*",
-    "vscode-jsonrpc": "*",
-    "vscode-languageserver-protocol": "*",
-    "vscode-languageserver-types": "*",
-    "wrap-ansi": "*",
-    ws: "*",
-    xss: "*",
-    yaml: "*",
-    zod: "*",
-    "color-diff-napi": "file:./shims/color-diff-napi",
-    "modifiers-napi": "file:./shims/modifiers-napi",
-    "url-handler-napi": "file:./shims/url-handler-napi"
-  }
+  packageManager: "bun@1.3.5",
+  dependencies: {}
 };
 
 // src/dev-entry.ts
