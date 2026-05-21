@@ -941,6 +941,12 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Enable auto-memory for this project. When false, Claude will not read from or write to the auto-memory directory.',
         ),
+      holographicMemoryEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'Enable holographic memory (SQLite fact storage). When false, the fact_store and fact_feedback tools are disabled. Default: true.',
+        ),
       autoMemoryDirectory: z
         .string()
         .optional()
